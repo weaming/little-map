@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  bd09ToGcj02,
   bd09ToMercator,
   computeAlignedTileSpec,
   computeBaiduAlignedTileSpec,
@@ -9,6 +10,7 @@ import {
   formatDistance,
   gcj02ToBd09,
   gcj02ToWgs84,
+  mercatorToBd09,
   isViewportInsidePolygon,
   lineLengthMeters,
   lngLatToWorldPx,
@@ -88,6 +90,14 @@ describe('geo utilities', () => {
     expect(mx).toBeLessThan(12965000);
     expect(my).toBeGreaterThan(4820000);
     expect(my).toBeLessThan(4835000);
+
+    // 反向 BD09MC -> BD-09 -> GCJ-02 往返精度应 < 1e-4 度
+    const [bLngBack, bLatBack] = mercatorToBd09(mx, my);
+    expect(Math.abs(bLngBack - bLng)).toBeLessThan(1e-4);
+    expect(Math.abs(bLatBack - bLat)).toBeLessThan(1e-4);
+    const [gLngBack, gLatBack] = bd09ToGcj02(bLngBack, bLatBack);
+    expect(Math.abs(gLngBack - gLng)).toBeLessThan(1e-4);
+    expect(Math.abs(gLatBack - gLat)).toBeLessThan(1e-4);
 
     const [px, py] = lngLatToWorldPx(116.3974, 39.9093, 12);
     const bdSpec = computeBaiduAlignedTileSpec(12, Math.floor(px / 256), Math.floor(py / 256), 'wgs84');

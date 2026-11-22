@@ -45,7 +45,7 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
     id: 'baidu-vec',
     label: '百度矢量 (2x)',
     crs: 'wgs84',
-    tiles: ['aligned-tile://baidu-vec/wgs84/{z}/{x}/{y}'],
+    tiles: [],
     attribution: '© 百度地图',
     maxzoom: 18,
   },
@@ -53,7 +53,7 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
     id: 'baidu-sat',
     label: '百度卫星',
     crs: 'wgs84',
-    tiles: ['aligned-tile://baidu-sat/wgs84/{z}/{x}/{y}'],
+    tiles: [],
     attribution: '© 百度卫星',
     maxzoom: 18,
   },
@@ -137,7 +137,7 @@ export const OVERLAYS: Record<OverlayId, OverlayConfig> = {
     id: 'baidu-road',
     label: '+ 百度路网 (2x 高清)',
     crs: 'bd09',
-    tiles: ['aligned-tile://baidu-road/wgs84/{z}/{x}/{y}'],
+    tiles: [],
     maxzoom: 18,
   },
   'google-road': {
@@ -664,6 +664,52 @@ export function gcj02ToBd09(lng: number, lat: number): [number, number] {
   const z = Math.hypot(lng, lat) + 0.00002 * Math.sin(lat * BD_X_PI);
   const theta = Math.atan2(lat, lng) + 0.000003 * Math.cos(lng * BD_X_PI);
   return [z * Math.cos(theta) + 0.0065, z * Math.sin(theta) + 0.006];
+}
+
+// 将百度 BD-09 经纬度反算回 GCJ-02 经纬度。
+export function bd09ToGcj02(lng: number, lat: number): [number, number] {
+  const x = lng - 0.0065;
+  const y = lat - 0.006;
+  const z = Math.hypot(x, y) - 0.00002 * Math.sin(y * BD_X_PI);
+  const theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * BD_X_PI);
+  return [z * Math.cos(theta), z * Math.sin(theta)];
+}
+
+const BD_MCBAND = [12890594.86, 8362377.87, 5591021.0, 3481989.83, 1678043.12, 0];
+const BD_MC2LL: number[][] = [
+  [1.410526172116255e-8, 0.00000898305509648872, -1.9939833816331, 200.9824383106796, -187.2403703815547, 91.6087516669843, -23.38765649603339, 2.57121317296198, -0.03801003308653, 17337981.2],
+  [-7.435856389565537e-9, 0.000008983055097726239, -0.78625201886289, 96.32687599759846, -1.85204757529826, -59.36935905485877, 47.40033549296737, -16.50741931063887, 2.28786674699375, 10260144.86],
+  [-3.030883460898826e-8, 0.00000898305509983578, 0.30071316287616, 59.74293618442277, 7.357984074871, -25.38371002664745, 13.45380521110908, -3.29883767235584, 0.32710905363475, 6856817.37],
+  [-1.981981304930552e-8, 0.000008983055099779535, 0.03278182852591, 40.31678527705744, 0.65659298677277, -4.44255534477492, 0.85341911805263, 0.12923347998204, -0.04625736007561, 4482777.06],
+  [3.09191371068437e-9, 0.000008983055096812155, 0.00006995724062, 23.10934304144901, -0.00023663490511, -0.6321817810242, -0.00663494467273, 0.03430082397953, -0.00466043876332, 2555164.4],
+  [2.890871144776878e-9, 0.000008983055095805407, -3.068298e-8, 7.47137025468032, -0.00000353937994, -0.02145144861037, -0.00001234426596, 0.00010322952773, -0.00000323890364, 826088.5],
+];
+
+// 将百度平面墨卡托（BD09MC）米制坐标反算为百度 BD-09 经纬度。
+export function mercatorToBd09(mx: number, my: number): [number, number] {
+  const absX = Math.abs(mx);
+  const absY = Math.abs(my);
+
+  let c = BD_MC2LL[BD_MC2LL.length - 1];
+  for (let i = 0; i < BD_MCBAND.length; i++) {
+    if (absY >= BD_MCBAND[i]) {
+      c = BD_MC2LL[i];
+      break;
+    }
+  }
+
+  const lng = c[0] + c[1] * absX;
+  const t = absY / c[9];
+  const lat =
+    c[2] +
+    c[3] * t +
+    c[4] * t * t +
+    c[5] * t * t * t +
+    c[6] * t * t * t * t +
+    c[7] * t * t * t * t * t +
+    c[8] * t * t * t * t * t * t;
+
+  return [mx < 0 ? -lng : lng, my < 0 ? -lat : lat];
 }
 
 // 将百度 BD-09 经纬度转换为百度平面墨卡托（BD09MC）米制坐标。

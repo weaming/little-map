@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import { extractErrorMessage, findHighwayBypassAnchors, planRoute, type BypassOption } from '../api/client';
-import { ensureAlignedTileProtocol } from '../map/alignedProtocol';
+import { createAlignedWebGLLayer, type WebGLTileProvider } from '../map/customTileLayer';
 import {
   BASEMAPS,
   OVERLAYS,
@@ -88,24 +88,68 @@ function overlayLayerId(overlay: OverlayId, baseCrs: 'wgs84' | 'gcj02'): string 
   return `${OVERLAY_LAYER_PREFIX}${overlay}-${baseCrs}`;
 }
 
-// 切换底图时保留已加载的 Source 与 MapLibre 瓦片内存缓存，仅切换 visibility。
+const customLayerRegistry = new WeakMap<maplibregl.Map, Set<string>>();
+
+function addTrackedCustomLayer(
+  map: maplibregl.Map,
+  layer: maplibregl.CustomLayerInterface,
+  beforeId?: string,
+) {
+  map.addLayer(layer, beforeId);
+  let set = customLayerRegistry.get(map);
+  if (!set) {
+    set = new Set<string>();
+    customLayerRegistry.set(map, set);
+  }
+  set.add(layer.id);
+}
+
+// 隐藏或移除同组非目标图层：MapLibre 的 custom WebGL 图层不支持 visibility layout，需直接 removeLayer 避免残留并释放 GPU 纹理。
+function hideOtherLayers(map: maplibregl.Map, prefix: string, keepLayerId: string) {
+  const customSet = customLayerRegistry.get(map);
+  if (customSet) {
+    for (const id of [...customSet]) {
+      if (!id.startsWith(prefix) || id === keepLayerId) continue;
+      if (map.getLayer(id)) {
+        map.removeLayer(id);
+      }
+      customSet.delete(id);
+    }
+  }
+
+  const style = map.getStyle();
+  if (!style) return;
+  for (const layer of style.layers ?? []) {
+    if (!layer.id.startsWith(prefix) || layer.id === keepLayerId) continue;
+    if (customSet?.has(layer.id)) continue;
+    map.setLayoutProperty(layer.id, 'visibility', 'none');
+  }
+}
+
+// 切换底图时保留普通 raster Source 缓存；custom WebGL 图层切换时直接移除释放显存。
 function syncBasemapLayer(map: maplibregl.Map, basemap: BasemapId) {
   const style = map.getStyle();
   if (!style) return;
 
   const targetLayer = basemapLayerId(basemap);
-  for (const layer of style.layers ?? []) {
-    if (layer.id.startsWith(BASEMAP_LAYER_PREFIX) && layer.id !== targetLayer) {
-      map.setLayoutProperty(layer.id, 'visibility', 'none');
-    }
-  }
+  hideOtherLayers(map, BASEMAP_LAYER_PREFIX, targetLayer);
 
   if (map.getLayer(targetLayer)) {
-    map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    if (!customLayerRegistry.get(map)?.has(targetLayer)) {
+      map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    }
     return;
   }
 
   const cfg = BASEMAPS[basemap] ?? BASEMAPS['amap-vec'];
+  const firstLayerId = map.getStyle()?.layers?.[0]?.id;
+
+  // 百度底图使用 WebGL Custom Layer 直接贴原图纹理（0 裁剪、0 拼接、0 重编码）
+  if (basemap === 'baidu-vec' || basemap === 'baidu-sat') {
+    addTrackedCustomLayer(map, createAlignedWebGLLayer(targetLayer, basemap, 'wgs84', cfg.maxzoom), firstLayerId);
+    return;
+  }
+
   const srcId = basemapSourceId(basemap);
   if (!map.getSource(srcId)) {
     map.addSource(srcId, {
@@ -117,7 +161,6 @@ function syncBasemapLayer(map: maplibregl.Map, basemap: BasemapId) {
     });
   }
 
-  const firstLayerId = map.getStyle()?.layers?.[0]?.id;
   map.addLayer(
     {
       id: targetLayer,
@@ -128,46 +171,50 @@ function syncBasemapLayer(map: maplibregl.Map, basemap: BasemapId) {
   );
 }
 
-// 切换路网叠加层时保留已加载的 Source，仅切换 visibility，始终位于底图之上、标注之下。
+// 切换路网叠加层时跨 CRS 使用 WebGL Custom Layer 贴原图纹理，切走时立即移除防止残留。
 function syncOverlayLayer(map: maplibregl.Map, basemap: BasemapId, overlay: OverlayId) {
   const style = map.getStyle();
   if (!style) return;
 
   const baseCfg = BASEMAPS[basemap] ?? BASEMAPS['amap-vec'];
   const targetLayer = overlay === 'none' ? '' : overlayLayerId(overlay, baseCfg.crs);
-
-  for (const layer of style.layers ?? []) {
-    if (layer.id.startsWith(OVERLAY_LAYER_PREFIX) && layer.id !== targetLayer) {
-      map.setLayoutProperty(layer.id, 'visibility', 'none');
-    }
-  }
+  hideOtherLayers(map, OVERLAY_LAYER_PREFIX, targetLayer);
 
   if (overlay === 'none') return;
 
   if (map.getLayer(targetLayer)) {
-    map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    if (!customLayerRegistry.get(map)?.has(targetLayer)) {
+      map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    }
     return;
   }
 
   const ovCfg = OVERLAYS[overlay];
-  if (!ovCfg || ovCfg.tiles.length === 0) return;
+  if (!ovCfg) return;
+
+  const beforeId = map.getLayer('features-fill') ? 'features-fill' : undefined;
+
+  if (baseCfg.crs !== ovCfg.crs) {
+    addTrackedCustomLayer(
+      map,
+      createAlignedWebGLLayer(targetLayer, overlay as WebGLTileProvider, baseCfg.crs, ovCfg.maxzoom),
+      beforeId,
+    );
+    return;
+  }
+
+  if (ovCfg.tiles.length === 0) return;
 
   const srcId = overlaySourceId(overlay, baseCfg.crs);
   if (!map.getSource(srcId)) {
-    const tiles =
-      baseCfg.crs === ovCfg.crs
-        ? ovCfg.tiles
-        : [`aligned-tile://${overlay}/${baseCfg.crs}/{z}/{x}/{y}`];
-
     map.addSource(srcId, {
       type: 'raster',
-      tiles,
+      tiles: ovCfg.tiles,
       tileSize: 256,
       maxzoom: ovCfg.maxzoom,
     });
   }
 
-  const beforeId = map.getLayer('features-fill') ? 'features-fill' : undefined;
   map.addLayer(
     {
       id: targetLayer,
@@ -188,36 +235,34 @@ function syncTrafficTileLayer(map: maplibregl.Map, basemap: BasemapId, showTraff
 
   const baseCfg = BASEMAPS[basemap] ?? BASEMAPS['amap-vec'];
   const targetLayer = showTraffic ? `${TRAFFIC_TILE_LAYER_PREFIX}${baseCfg.crs}` : '';
-
-  for (const layer of style.layers ?? []) {
-    if (layer.id.startsWith(TRAFFIC_TILE_LAYER_PREFIX) && layer.id !== targetLayer) {
-      map.setLayoutProperty(layer.id, 'visibility', 'none');
-    }
-  }
+  hideOtherLayers(map, TRAFFIC_TILE_LAYER_PREFIX, targetLayer);
 
   if (!showTraffic) return;
 
   if (map.getLayer(targetLayer)) {
-    map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    if (!customLayerRegistry.get(map)?.has(targetLayer)) {
+      map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    }
+    return;
+  }
+
+  const beforeId = map.getLayer('features-fill') ? 'features-fill' : undefined;
+
+  if (baseCfg.crs !== 'gcj02') {
+    addTrackedCustomLayer(map, createAlignedWebGLLayer(targetLayer, 'amap-traffic', baseCfg.crs, 17), beforeId);
     return;
   }
 
   const srcId = `${TRAFFIC_TILE_SOURCE_PREFIX}${baseCfg.crs}`;
   if (!map.getSource(srcId)) {
-    const tiles =
-      baseCfg.crs === 'gcj02'
-        ? ['/api/tile-proxy?provider=amap-traffic&z={z}&x={x}&y={y}']
-        : [`aligned-tile://amap-traffic/${baseCfg.crs}/{z}/{x}/{y}`];
-
     map.addSource(srcId, {
       type: 'raster',
-      tiles,
+      tiles: ['/api/tile-proxy?provider=amap-traffic&z={z}&x={x}&y={y}'],
       tileSize: 256,
       maxzoom: 17,
     });
   }
 
-  const beforeId = map.getLayer('features-fill') ? 'features-fill' : undefined;
   map.addLayer(
     {
       id: targetLayer,
@@ -229,6 +274,13 @@ function syncTrafficTileLayer(map: maplibregl.Map, basemap: BasemapId, showTraff
 }
 
 function buildBaseStyle(basemap: BasemapId): maplibregl.StyleSpecification {
+  if (basemap === 'baidu-vec' || basemap === 'baidu-sat') {
+    return {
+      version: 8,
+      sources: {},
+      layers: [],
+    };
+  }
   const cfg = BASEMAPS[basemap] ?? BASEMAPS['amap-vec'];
   const srcId = basemapSourceId(basemap);
   return {
@@ -833,7 +885,6 @@ export function MapCanvas({
   // 初始化 MapLibre 实例
   useEffect(() => {
     if (!containerRef.current) return;
-    ensureAlignedTileProtocol();
 
     const displayCenter = wgs84ToDisplay(initialCenter[0], initialCenter[1], basemap);
     const map = new maplibregl.Map({
@@ -855,6 +906,7 @@ export function MapCanvas({
 
     map.on('style.load', () => {
       ensureVectorLayers(map);
+      syncBasemapLayer(map, latestRef.current.basemap);
       syncOverlayLayer(map, latestRef.current.basemap, latestRef.current.overlay);
       syncTrafficTileLayer(map, latestRef.current.basemap, latestRef.current.showTraffic);
       updateViewportBounds();
