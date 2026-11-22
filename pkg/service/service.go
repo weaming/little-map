@@ -285,6 +285,33 @@ func (s *Service) DeleteMap(ctx context.Context, mapID string) error {
 	return s.store.DeleteMap(ctx, mapID)
 }
 
+// CloneMap 深拷贝任意已有地图（含全部标注），生成独立的新地图与编辑令牌。
+func (s *Service) CloneMap(ctx context.Context, srcMapID, customTitle string) (*CreateMapResult, error) {
+	newMapID, err := randomToken(8)
+	if err != nil {
+		return nil, fmt.Errorf("generate cloned map id: %w", err)
+	}
+	newEditToken, err := randomToken(18)
+	if err != nil {
+		return nil, fmt.Errorf("generate cloned edit token: %w", err)
+	}
+
+	cloned, err := s.store.CloneMap(ctx, srcMapID, newMapID, newEditToken, customTitle, func() (string, error) {
+		tok, genErr := randomToken(9)
+		if genErr != nil {
+			return "", genErr
+		}
+		return "f_" + tok, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &CreateMapResult{
+		Map:       cloned,
+		EditToken: newEditToken,
+	}, nil
+}
+
 func randomToken(byteLen int) (string, error) {
 	buf := make([]byte, byteLen)
 	if _, err := rand.Read(buf); err != nil {

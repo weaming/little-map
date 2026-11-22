@@ -435,6 +435,113 @@ func (s *Store) DeleteMap(ctx context.Context, mapID string) error {
 	return nil
 }
 
+// CloneMap 在单个事务内完整深拷贝一张地图及其全部标注为新地图。
+func (s *Store) CloneMap(ctx context.Context, srcMapID, newMapID, newEditToken, customTitle string, nextFeatureID func() (string, error)) (*Map, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	const qSrc = `
+SELECT title, description, center_lng, center_lat, zoom, basemap
+FROM maps WHERE id = ?
+`
+	var src Map
+	err = tx.QueryRowContext(ctx, qSrc, srcMapID).Scan(
+		&src.Title, &src.Description, &src.CenterLng, &src.CenterLat, &src.Zoom, &src.Basemap,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query source map: %w", err)
+	}
+
+	title := strings.TrimSpace(customTitle)
+	if title == "" {
+		title = src.Title + " (副本)"
+	}
+
+	now := s.nowISO()
+	cloned := Map{
+		ID:          newMapID,
+		EditToken:   newEditToken,
+		Title:       title,
+		Description: src.Description,
+		CenterLng:   src.CenterLng,
+		CenterLat:   src.CenterLat,
+		Zoom:        src.Zoom,
+		Basemap:     src.Basemap,
+		Revision:    1,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	const qInsertMap = `
+INSERT INTO maps (id, edit_token, title, description, center_lng, center_lat, zoom, basemap, revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+	if _, err := tx.ExecContext(ctx, qInsertMap,
+		cloned.ID, cloned.EditToken, cloned.Title, cloned.Description,
+		cloned.CenterLng, cloned.CenterLat, cloned.Zoom, cloned.Basemap,
+		cloned.Revision, cloned.CreatedAt, cloned.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("insert cloned map: %w", err)
+	}
+
+	const qFeat = `
+SELECT title, description, category, color, icon, geometry_type, geometry_json, visible, sort_order
+FROM features WHERE map_id = ?
+ORDER BY sort_order ASC, created_at ASC
+`
+	rows, err := tx.QueryContext(ctx, qFeat, srcMapID)
+	if err != nil {
+		return nil, fmt.Errorf("query source features: %w", err)
+	}
+
+	type rawFeature struct {
+		title, desc, cat, color, icon, geomType, geomJSON string
+		visible, sortOrder                                int
+	}
+	var srcFeatures []rawFeature
+	for rows.Next() {
+		var rf rawFeature
+		if err := rows.Scan(&rf.title, &rf.desc, &rf.cat, &rf.color, &rf.icon, &rf.geomType, &rf.geomJSON, &rf.visible, &rf.sortOrder); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan source feature: %w", err)
+		}
+		srcFeatures = append(srcFeatures, rf)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate source features: %w", err)
+	}
+	_ = rows.Close()
+
+	const qInsertFeat = `
+INSERT INTO features (id, map_id, title, description, category, color, icon, geometry_type, geometry_json, visible, sort_order, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+	for _, rf := range srcFeatures {
+		fid, err := nextFeatureID()
+		if err != nil {
+			return nil, fmt.Errorf("generate cloned feature id: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, qInsertFeat,
+			fid, cloned.ID, rf.title, rf.desc, rf.cat, rf.color, rf.icon,
+			rf.geomType, rf.geomJSON, rf.visible, rf.sortOrder, now, now,
+		); err != nil {
+			return nil, fmt.Errorf("insert cloned feature: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit clone tx: %w", err)
+	}
+	return &cloned, nil
+}
+
 func lockAndVerifyMapTx(ctx context.Context, tx *sql.Tx, mapID, editToken string, baseRevision int64) (*Map, error) {
 	const q = `
 SELECT id, edit_token, title, description, center_lng, center_lat, zoom, basemap, revision, created_at, updated_at

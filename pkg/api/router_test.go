@@ -197,3 +197,54 @@ func TestAdminListAndDeleteMaps(t *testing.T) {
 		t.Fatalf("expected 200 on admin delete, got %d", delResp.Code)
 	}
 }
+
+func TestCloneMap(t *testing.T) {
+	router := setupTestRouter(t)
+
+	// 创建原地图并添加一个标注
+	createReq := httptest.NewRequest(http.MethodPost, "/api/maps", bytes.NewBufferString(`{"title":"原版攻略"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	var src struct {
+		Map struct {
+			ID string `json:"id"`
+		} `json:"map"`
+		EditToken string `json:"edit_token"`
+	}
+	_ = json.Unmarshal(createResp.Body.Bytes(), &src)
+
+	upsertBody := `{"base_revision":1,"features":[{"title":"打卡点A","geometry":{"type":"Point","coordinates":[116.3974,39.9093]}}]}`
+	upsertReq := httptest.NewRequest(http.MethodPost, "/api/maps/"+src.Map.ID+"/features/batch", bytes.NewBufferString(upsertBody))
+	upsertReq.Header.Set("Content-Type", "application/json")
+	upsertReq.Header.Set("X-Edit-Token", src.EditToken)
+	router.ServeHTTP(httptest.NewRecorder(), upsertReq)
+
+	// 免 token 克隆原地图
+	cloneReq := httptest.NewRequest(http.MethodPost, "/api/maps/"+src.Map.ID+"/clone", nil)
+	cloneResp := httptest.NewRecorder()
+	router.ServeHTTP(cloneResp, cloneReq)
+	if cloneResp.Code != http.StatusCreated {
+		t.Fatalf("clone status = %d, body = %s", cloneResp.Code, cloneResp.Body.String())
+	}
+
+	var cloned struct {
+		Map struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"map"`
+		EditToken string `json:"edit_token"`
+	}
+	_ = json.Unmarshal(cloneResp.Body.Bytes(), &cloned)
+	if cloned.Map.ID == "" || cloned.Map.ID == src.Map.ID || cloned.EditToken == "" {
+		t.Fatalf("invalid cloned map metadata: %+v", cloned)
+	}
+
+	// 验证副本包含原标注
+	getReq := httptest.NewRequest(http.MethodGet, "/api/maps/"+cloned.Map.ID, nil)
+	getResp := httptest.NewRecorder()
+	router.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK || !bytes.Contains(getResp.Body.Bytes(), []byte("打卡点A")) {
+		t.Fatalf("expected cloned map to include copied feature, body = %s", getResp.Body.String())
+	}
+}

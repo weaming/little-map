@@ -30,6 +30,7 @@ func NewRouter(svc *service.Service, mcpHandler http.Handler, webFS fs.FS) *gin.
 			c.JSON(http.StatusOK, svc.Capabilities())
 		})
 		group.POST("/maps", handleCreateMap(svc))
+		group.POST("/maps/:id/clone", handleCloneMap(svc))
 		group.GET("/maps/:id", handleGetMap(svc))
 		group.PATCH("/maps/:id", handleUpdateMapMeta(svc))
 		group.POST("/maps/:id/features/batch", handleUpsertFeatures(svc))
@@ -63,6 +64,27 @@ func handleCreateMap(svc *service.Service) gin.HandlerFunc {
 		}
 
 		res, err := svc.CreateMap(c.Request.Context(), in)
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, res)
+	}
+}
+
+func handleCloneMap(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Title string `json:"title"`
+		}
+		if c.Request.ContentLength > 0 {
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+				return
+			}
+		}
+
+		res, err := svc.CloneMap(c.Request.Context(), c.Param("id"), body.Title)
 		if err != nil {
 			writeServiceError(c, err)
 			return

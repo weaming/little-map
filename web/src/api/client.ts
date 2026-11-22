@@ -49,6 +49,14 @@ export async function createMap(params?: {
   return data;
 }
 
+export async function cloneMap(mapId: string, title?: string): Promise<CreateMapResponse> {
+  const { data } = await http.post<CreateMapResponse>(
+    `/maps/${encodeURIComponent(mapId)}/clone`,
+    title ? { title } : {},
+  );
+  return data;
+}
+
 export async function fetchMap(
   mapId: string,
   editToken: string,
