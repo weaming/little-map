@@ -20,9 +20,10 @@ const (
 
 // RouteInput 定义骑行/徒步路径规划请求参数（统一使用 WGS-84 坐标）。
 type RouteInput struct {
-	Mode      string      `json:"mode"`
-	Waypoints [][]float64 `json:"waypoints"`
-	Provider  string      `json:"provider,omitempty"`
+	Mode         string      `json:"mode"`
+	Waypoints    [][]float64 `json:"waypoints"`
+	SegmentModes []string    `json:"segment_modes,omitempty"`
+	Provider     string      `json:"provider,omitempty"`
 }
 
 // RouteResult 表示统一转换为 WGS-84 的路径规划结果。
@@ -40,8 +41,8 @@ func (s *Service) PlanRoute(ctx context.Context, in RouteInput) (*RouteResult, e
 	if mode == "" {
 		mode = "bicycling"
 	}
-	if mode != "bicycling" && mode != "walking" {
-		return nil, fmt.Errorf("%w: unsupported mode %q (supported: bicycling, walking)", ErrInvalidInput, mode)
+	if mode != "bicycling" && mode != "walking" && mode != "driving" {
+		return nil, fmt.Errorf("%w: unsupported mode %q (supported: driving, bicycling, walking)", ErrInvalidInput, mode)
 	}
 	if len(in.Waypoints) < 2 {
 		return nil, fmt.Errorf("%w: at least 2 waypoints are required", ErrInvalidInput)
@@ -67,64 +68,123 @@ func (s *Service) PlanRoute(ctx context.Context, in RouteInput) (*RouteResult, e
 	switch provider {
 	case "amap":
 		if s.cfg.AmapKey == "" {
-			return s.planRouteOSRM(ctx, mode, in.Waypoints)
+			return s.planRouteSegmented(ctx, mode, "osrm", in.Waypoints, in.SegmentModes)
 		}
-		res, err := s.planRouteAmap(ctx, mode, in.Waypoints)
+		res, err := s.planRouteSegmented(ctx, mode, "amap", in.Waypoints, in.SegmentModes)
 		if err != nil {
-			return s.planRouteOSRM(ctx, mode, in.Waypoints)
+			return s.planRouteSegmented(ctx, mode, "osrm", in.Waypoints, in.SegmentModes)
 		}
 		return res, nil
 
 	case "osrm":
-		return s.planRouteOSRM(ctx, mode, in.Waypoints)
+		return s.planRouteSegmented(ctx, mode, "osrm", in.Waypoints, in.SegmentModes)
 
 	default:
 		return nil, fmt.Errorf("%w: unknown route provider %q", ErrInvalidInput, provider)
 	}
 }
 
-func (s *Service) planRouteAmap(ctx context.Context, mode string, waypoints [][]float64) (*RouteResult, error) {
+func hasDirectSegment(segModes []string, count int) bool {
+	for i := 0; i < count && i < len(segModes); i++ {
+		if strings.EqualFold(strings.TrimSpace(segModes[i]), "direct") {
+			return true
+		}
+	}
+	return false
+}
+
+// planRouteSegmented 支持按段混用贴路规划（auto）与自由直线（direct）。
+func (s *Service) planRouteSegmented(ctx context.Context, mode, provider string, waypoints [][]float64, segModes []string) (*RouteResult, error) {
+	segCount := len(waypoints) - 1
+	// 纯 OSRM 且无直线段时，单次请求完成以减少延迟
+	if provider == "osrm" && !hasDirectSegment(segModes, segCount) {
+		return s.planRouteOSRM(ctx, mode, waypoints)
+	}
+
 	var totalDist float64
 	var totalDur float64
 	merged := make([][]float64, 0, 128)
+	usedProvider := provider
 
-	for i := 0; i < len(waypoints)-1; i++ {
-		oLng, oLat := geo.WGS84ToGCJ02(waypoints[i][0], waypoints[i][1])
-		dLng, dLat := geo.WGS84ToGCJ02(waypoints[i+1][0], waypoints[i+1][1])
-		origin := fmt.Sprintf("%.6f,%.6f", oLng, oLat)
-		dest := fmt.Sprintf("%.6f,%.6f", dLng, dLat)
+	for i := range segCount {
+		p1 := waypoints[i]
+		p2 := waypoints[i+1]
+		isDirect := i < len(segModes) && strings.EqualFold(strings.TrimSpace(segModes[i]), "direct")
 
-		var segDist, segDur float64
-		var polylines []string
-		var err error
-		if mode == "walking" {
-			segDist, segDur, polylines, err = s.fetchAmapWalkingSegment(ctx, origin, dest)
+		if isDirect {
+			dist := haversineRouteMeters(p1[0], p1[1], p2[0], p2[1])
+			speed := 4.17 // 骑行约 15 km/h
+			switch mode {
+			case "walking":
+				speed = 1.25 // 徒步约 4.5 km/h
+			case "driving":
+				speed = 16.67 // 驾车约 60 km/h
+			}
+			totalDist += dist
+			totalDur += dist / speed
+			merged = appendCoordDedup(merged, roundCoord(p1[0]), roundCoord(p1[1]))
+			merged = appendCoordDedup(merged, roundCoord(p2[0]), roundCoord(p2[1]))
+			continue
+		}
+
+		if provider == "amap" {
+			oLng, oLat := geo.WGS84ToGCJ02(p1[0], p1[1])
+			dLng, dLat := geo.WGS84ToGCJ02(p2[0], p2[1])
+			origin := fmt.Sprintf("%.6f,%.6f", oLng, oLat)
+			dest := fmt.Sprintf("%.6f,%.6f", dLng, dLat)
+
+			var segDist, segDur float64
+			var polylines []string
+			var err error
+			switch mode {
+			case "walking":
+				segDist, segDur, polylines, err = s.fetchAmapV3DirectionSegment(ctx, "walking", origin, dest)
+			case "driving":
+				segDist, segDur, polylines, err = s.fetchAmapV3DirectionSegment(ctx, "driving", origin, dest)
+			default:
+				segDist, segDur, polylines, err = s.fetchAmapBicyclingSegment(ctx, origin, dest)
+			}
+			if err != nil {
+				return nil, err
+			}
+			totalDist += segDist
+			totalDur += segDur
+			for _, pl := range polylines {
+				merged = appendAmapPolylineWGS84(merged, pl)
+			}
 		} else {
-			segDist, segDur, polylines, err = s.fetchAmapBicyclingSegment(ctx, origin, dest)
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		totalDist += segDist
-		totalDur += segDur
-		for _, pl := range polylines {
-			merged = appendAmapPolylineWGS84(merged, pl)
+			segRes, err := s.planRouteOSRM(ctx, mode, [][]float64{p1, p2})
+			if err != nil {
+				return nil, err
+			}
+			totalDist += segRes.DistanceMeters
+			totalDur += segRes.DurationSeconds
+			var segCoords [][]float64
+			if err := json.Unmarshal(segRes.Geometry.Coordinates, &segCoords); err == nil {
+				for _, pt := range segCoords {
+					if len(pt) >= 2 {
+						merged = appendCoordDedup(merged, roundCoord(pt[0]), roundCoord(pt[1]))
+					}
+				}
+			}
 		}
 	}
 
 	coords := simplifyLineCoords(merged, maxRouteVertices)
 	if len(coords) < 2 {
-		return nil, fmt.Errorf("amap route returned insufficient coordinates")
+		return nil, fmt.Errorf("route returned insufficient coordinates")
 	}
 	raw, err := json.Marshal(coords)
 	if err != nil {
 		return nil, fmt.Errorf("marshal route coords: %w", err)
 	}
+	if hasDirectSegment(segModes, segCount) {
+		usedProvider = provider + "+direct"
+	}
 
 	return &RouteResult{
 		Mode:            mode,
-		Provider:        "amap",
+		Provider:        usedProvider,
 		DistanceMeters:  totalDist,
 		DurationSeconds: totalDur,
 		Geometry: geo.Geometry{
@@ -134,8 +194,8 @@ func (s *Service) planRouteAmap(ctx context.Context, mode string, waypoints [][]
 	}, nil
 }
 
-func (s *Service) fetchAmapWalkingSegment(ctx context.Context, origin, dest string) (float64, float64, []string, error) {
-	endpoint := "https://restapi.amap.com/v3/direction/walking?" + url.Values{
+func (s *Service) fetchAmapV3DirectionSegment(ctx context.Context, kind, origin, dest string) (float64, float64, []string, error) {
+	endpoint := fmt.Sprintf("https://restapi.amap.com/v3/direction/%s?", kind) + url.Values{
 		"key":         {s.cfg.AmapKey},
 		"origin":      {origin},
 		"destination": {dest},
@@ -147,12 +207,12 @@ func (s *Service) fetchAmapWalkingSegment(ctx context.Context, origin, dest stri
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("amap walking request: %w", err)
+		return 0, 0, nil, fmt.Errorf("amap %s request: %w", kind, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, nil, fmt.Errorf("amap walking status: %d", resp.StatusCode)
+		return 0, 0, nil, fmt.Errorf("amap %s status: %d", kind, resp.StatusCode)
 	}
 
 	var payload struct {
@@ -169,10 +229,10 @@ func (s *Service) fetchAmapWalkingSegment(ctx context.Context, origin, dest stri
 		} `json:"route"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return 0, 0, nil, fmt.Errorf("decode amap walking: %w", err)
+		return 0, 0, nil, fmt.Errorf("decode amap %s: %w", kind, err)
 	}
 	if payload.Status != "1" || len(payload.Route.Paths) == 0 {
-		return 0, 0, nil, fmt.Errorf("amap walking error: %s", payload.Info)
+		return 0, 0, nil, fmt.Errorf("amap %s error: %s", kind, payload.Info)
 	}
 
 	path := payload.Route.Paths[0]
@@ -240,8 +300,11 @@ func (s *Service) fetchAmapBicyclingSegment(ctx context.Context, origin, dest st
 
 func (s *Service) planRouteOSRM(ctx context.Context, mode string, waypoints [][]float64) (*RouteResult, error) {
 	profile := "bike"
-	if mode == "walking" {
+	switch mode {
+	case "walking":
 		profile = "foot"
+	case "driving":
+		profile = "driving"
 	}
 
 	parts := make([]string, 0, len(waypoints))
@@ -356,6 +419,26 @@ func simplifyLineCoords(coords [][]float64, maxVertices int) [][]float64 {
 	last := coords[len(coords)-1]
 	out = append(out, []float64{roundCoord(last[0]), roundCoord(last[1])})
 	return out
+}
+
+func appendCoordDedup(dst [][]float64, lng, lat float64) [][]float64 {
+	if len(dst) > 0 {
+		last := dst[len(dst)-1]
+		if last[0] == lng && last[1] == lat {
+			return dst
+		}
+	}
+	return append(dst, []float64{lng, lat})
+}
+
+func haversineRouteMeters(lng1, lat1, lng2, lat2 float64) float64 {
+	const earthR = 6371008.8
+	rad := math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLng := (lng2 - lng1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	return 2 * earthR * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
 func isLikelyInChina(lng, lat float64) bool {

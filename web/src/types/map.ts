@@ -72,7 +72,9 @@ export type BasemapId = 'amap-vec' | 'amap-sat' | 'google-vec' | 'google-sat' | 
 
 export type OverlayId = 'none' | 'amap-label' | 'amap-road' | 'google-road';
 
-export type RouteMode = 'bicycling' | 'walking';
+export type RouteMode = 'driving' | 'bicycling' | 'walking';
+export type RouteSegmentMode = 'auto' | 'direct';
+export type RouteProvider = 'auto' | 'amap' | 'osrm';
 
 export interface RouteResult {
   mode: RouteMode;

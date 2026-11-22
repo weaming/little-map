@@ -1,6 +1,11 @@
 package service
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"little-map/pkg/config"
+)
 
 func TestAppendAmapPolylineAndSimplifyLine(t *testing.T) {
 	var merged [][]float64
@@ -22,5 +27,24 @@ func TestAppendAmapPolylineAndSimplifyLine(t *testing.T) {
 	}
 	if simplified[0][0] != roundCoord(dense[0][0]) || simplified[len(simplified)-1][0] != roundCoord(dense[len(dense)-1][0]) {
 		t.Fatalf("endpoints not preserved after simplify")
+	}
+}
+
+func TestDirectSegmentRoute(t *testing.T) {
+	svc := New(nil, &config.Config{})
+	res, err := svc.PlanRoute(context.Background(), RouteInput{
+		Mode:         "walking",
+		Waypoints:    [][]float64{{116.391, 39.907}, {116.401, 39.907}},
+		SegmentModes: []string{"direct"},
+		Provider:     "osrm",
+	})
+	if err != nil {
+		t.Fatalf("direct route failed: %v", err)
+	}
+	if res.DistanceMeters < 800 || res.DistanceMeters > 900 {
+		t.Fatalf("unexpected direct distance: %f", res.DistanceMeters)
+	}
+	if res.DurationSeconds <= 0 {
+		t.Fatalf("expected positive duration")
 	}
 }

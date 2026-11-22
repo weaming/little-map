@@ -8,7 +8,9 @@ import type {
   MapSnapshot,
   PlaceResult,
   RouteMode,
+  RouteProvider,
   RouteResult,
+  RouteSegmentMode,
   ServerCapabilities,
 } from '../types/map';
 
@@ -149,12 +151,14 @@ export async function reverseGeocode(lng: number, lat: number): Promise<PlaceRes
 export async function planRoute(
   mode: RouteMode,
   waypoints: [number, number][],
-  provider = 'auto',
+  provider: RouteProvider = 'auto',
+  segmentModes?: RouteSegmentMode[],
 ): Promise<RouteResult> {
   const { data } = await http.post<RouteResult>('/route', {
     mode,
     waypoints,
     provider,
+    ...(segmentModes && segmentModes.length > 0 ? { segment_modes: segmentModes } : {}),
   });
   return data;
 }
