@@ -41,6 +41,22 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
     attribution: '© 高德卫星',
     maxzoom: 18,
   },
+  'baidu-vec': {
+    id: 'baidu-vec',
+    label: '百度矢量 (2x)',
+    crs: 'wgs84',
+    tiles: ['aligned-tile://baidu-vec/wgs84/{z}/{x}/{y}'],
+    attribution: '© 百度地图',
+    maxzoom: 18,
+  },
+  'baidu-sat': {
+    id: 'baidu-sat',
+    label: '百度卫星',
+    crs: 'wgs84',
+    tiles: ['aligned-tile://baidu-sat/wgs84/{z}/{x}/{y}'],
+    attribution: '© 百度卫星',
+    maxzoom: 18,
+  },
   'google-vec': {
     id: 'google-vec',
     label: 'Google 街道',
@@ -80,7 +96,7 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
 export interface OverlayConfig {
   id: OverlayId;
   label: string;
-  crs: 'wgs84' | 'gcj02';
+  crs: 'wgs84' | 'gcj02' | 'bd09';
   tiles: string[];
   maxzoom: number;
 }
@@ -115,6 +131,13 @@ export const OVERLAYS: Record<OverlayId, OverlayConfig> = {
       'https://webst03.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}',
       'https://webst04.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}',
     ],
+    maxzoom: 18,
+  },
+  'baidu-road': {
+    id: 'baidu-road',
+    label: '+ 百度路网 (2x 高清)',
+    crs: 'bd09',
+    tiles: ['aligned-tile://baidu-road/wgs84/{z}/{x}/{y}'],
     maxzoom: 18,
   },
   'google-road': {
@@ -623,4 +646,121 @@ export function computeAlignedTileSpec(
     }
   }
   return { isIdentity: false, dx, dy, sources };
+}
+
+const BD_X_PI = (Math.PI * 3000.0) / 180.0;
+const BD_LLBAND = [75, 60, 45, 30, 15, 0];
+const BD_LL2MC: number[][] = [
+  [-0.0015702102444, 111320.7020616939, 1704480524535203, -10338987376042340, 26112667856603880, -35149669176653700, 26595700718403920, -10725012454188240, 1800819912950474, 82.5],
+  [0.0008277824516172526, 111320.7020463578, 647795574.6671607, -4082003173.641316, 10774905663.51142, -15171875531.51559, 12053065338.62167, -5124939663.577472, 913311935.9512032, 67.5],
+  [0.00337398766765, 111320.7020202162, 4481351.045890365, -23393751.19931662, 79682215.47186455, -115964993.2797253, 97236711.15602145, -43661946.33752821, 8477230.501135234, 52.5],
+  [0.00220636496208, 111320.7020209128, 51751.86112841131, 3796837.749470245, 992013.7397791013, -1221952.21711287, 1340652.697009075, -620943.6990984312, 144416.9293806241, 37.5],
+  [-0.0003441963504368392, 111320.7020576856, 278.2353980772752, 2485758.690035394, 6070.750963243378, 54821.18345352118, 9540.606633304236, -2710.55326746645, 1405.483844121726, 22.5],
+  [-0.0003218135878613132, 111320.7020701615, 0.00369383431289, 823725.6402795718, 0.46104986909093, 2351.343141331292, 1.58060784298199, 8.77738589078284, 0.37238884252424, 7.45],
+];
+
+// 将 GCJ-02 经纬度转换为百度 BD-09 经纬度。
+export function gcj02ToBd09(lng: number, lat: number): [number, number] {
+  const z = Math.hypot(lng, lat) + 0.00002 * Math.sin(lat * BD_X_PI);
+  const theta = Math.atan2(lat, lng) + 0.000003 * Math.cos(lng * BD_X_PI);
+  return [z * Math.cos(theta) + 0.0065, z * Math.sin(theta) + 0.006];
+}
+
+// 将百度 BD-09 经纬度转换为百度平面墨卡托（BD09MC）米制坐标。
+export function bd09ToMercator(lng: number, lat: number): [number, number] {
+  const clampedLng = ((lng + 180) % 360 + 360) % 360 - 180;
+  const clampedLat = Math.max(-74, Math.min(74, lat));
+  const absLat = Math.abs(clampedLat);
+
+  let c = BD_LL2MC[BD_LL2MC.length - 1];
+  for (let i = 0; i < BD_LLBAND.length; i++) {
+    if (absLat >= BD_LLBAND[i]) {
+      c = BD_LL2MC[i];
+      break;
+    }
+  }
+
+  const x = c[0] + c[1] * Math.abs(clampedLng);
+  const t = absLat / c[9];
+  const y =
+    c[2] +
+    c[3] * t +
+    c[4] * t * t +
+    c[5] * t * t * t +
+    c[6] * t * t * t * t +
+    c[7] * t * t * t * t * t +
+    c[8] * t * t * t * t * t * t;
+
+  return [clampedLng < 0 ? -x : x, clampedLat < 0 ? -y : y];
+}
+
+export interface BaiduTilePatch {
+  bx: number;
+  by: number;
+  drawX: number;
+  drawY: number;
+  drawW: number;
+  drawH: number;
+}
+
+export interface BaiduAlignedTileSpec {
+  bz: number;
+  patches: BaiduTilePatch[];
+}
+
+// 将标准 EPSG:3857 瓦片 (z, x, y) 精确映射到百度 BD09MC 瓦片网格，供 Canvas 像素级重投影绘制。
+export function computeBaiduAlignedTileSpec(
+  z: number,
+  x: number,
+  y: number,
+  targetCrs: 'wgs84' | 'gcj02',
+): BaiduAlignedTileSpec {
+  const [westLng, northLat] = worldPxToLngLat(x * 256, y * 256, z);
+  const [eastLng, southLat] = worldPxToLngLat((x + 1) * 256, (y + 1) * 256, z);
+
+  const toBdMc = (lng: number, lat: number): [number, number] => {
+    const [gLng, gLat] = targetCrs === 'wgs84' ? wgs84ToGcj02(lng, lat) : [lng, lat];
+    const [bLng, bLat] = gcj02ToBd09(gLng, gLat);
+    return bd09ToMercator(bLng, bLat);
+  };
+
+  const [mcMinX, mcMaxY] = toBdMc(westLng, northLat);
+  const [mcMaxX, mcMinY] = toBdMc(eastLng, southLat);
+  const spanX = mcMaxX - mcMinX;
+  const spanY = mcMaxY - mcMinY;
+  if (spanX <= 0 || spanY <= 0) {
+    return { bz: Math.max(3, Math.min(19, z + 1)), patches: [] };
+  }
+
+  // 动态匹配与目标 3857 瓦片分辨率最接近的百度缩放级别（保持 1:1 清晰度）
+  const idealBz = Math.round(Math.log2((256 * Math.pow(2, 18)) / spanX));
+  const bz = Math.max(3, Math.min(19, idealBz));
+  const tileSpan = 256 * Math.pow(2, 18 - bz);
+
+  const bxMin = Math.floor(mcMinX / tileSpan);
+  const bxMax = Math.floor((mcMaxX - 1e-6) / tileSpan);
+  const byMin = Math.floor(mcMinY / tileSpan);
+  const byMax = Math.floor((mcMaxY - 1e-6) / tileSpan);
+
+  // 极端低缩放级别下限制单瓦片最大拼接数，避免过多请求
+  if ((bxMax - bxMin + 1) * (byMax - byMin + 1) > 16) {
+    return { bz, patches: [] };
+  }
+
+  const patches: BaiduTilePatch[] = [];
+  for (let by = byMin; by <= byMax; by++) {
+    for (let bx = bxMin; bx <= bxMax; bx++) {
+      const tileLeft = bx * tileSpan;
+      const tileTop = (by + 1) * tileSpan;
+      patches.push({
+        bx,
+        by,
+        drawX: ((tileLeft - mcMinX) / spanX) * 256,
+        drawY: ((mcMaxY - tileTop) / spanY) * 256,
+        drawW: (tileSpan / spanX) * 256,
+        drawH: (tileSpan / spanY) * 256,
+      });
+    }
+  }
+  return { bz, patches };
 }

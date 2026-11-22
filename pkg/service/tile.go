@@ -7,9 +7,13 @@ import (
 	"net/http"
 )
 
-// FetchOverlayTile 仅按严格白名单代理透明路网瓦片，供浏览器 Canvas 跨域像素纠偏使用。
+// FetchOverlayTile 仅按严格白名单代理透明路网与第三方投影瓦片，供浏览器 Canvas 跨域像素纠偏使用。
 func (s *Service) FetchOverlayTile(ctx context.Context, provider string, z, x, y int) ([]byte, string, error) {
-	if z < 0 || z > 22 || x < 0 || y < 0 {
+	if z < 0 || z > 22 {
+		return nil, "", fmt.Errorf("%w: invalid tile zoom", ErrInvalidInput)
+	}
+	isBaidu := provider == "baidu-vec" || provider == "baidu-sat" || provider == "baidu-road"
+	if !isBaidu && (x < 0 || y < 0) {
 		return nil, "", fmt.Errorf("%w: invalid tile coordinates", ErrInvalidInput)
 	}
 
@@ -26,6 +30,15 @@ func (s *Service) FetchOverlayTile(ctx context.Context, provider string, z, x, y
 	case "google-road":
 		sub := (x + y) % 4
 		targetURL = fmt.Sprintf("https://mt%d.google.com/vt/lyrs=h&hl=zh-CN&scale=2&x=%d&y=%d&z=%d", sub, x, y, z)
+	case "baidu-vec":
+		sub := ((x+y)%4 + 4) % 4
+		targetURL = fmt.Sprintf("https://maponline%d.bdimg.com/tile/?qt=vtile&x=%s&y=%s&z=%d&styles=pl&scaler=2&udt=20250101", sub, formatBaiduTileCoord(x), formatBaiduTileCoord(y), z)
+	case "baidu-sat":
+		sub := ((x+y)%4 + 4) % 4
+		targetURL = fmt.Sprintf("https://maponline%d.bdimg.com/starpic/?qt=satepc&u=x=%s;y=%s;z=%d;v=009;type=sate&fm=46", sub, formatBaiduTileCoord(x), formatBaiduTileCoord(y), z)
+	case "baidu-road":
+		sub := ((x+y)%4 + 4) % 4
+		targetURL = fmt.Sprintf("https://maponline%d.bdimg.com/tile/?qt=vtile&x=%s&y=%s&z=%d&styles=sl&scaler=2&udt=20250101", sub, formatBaiduTileCoord(x), formatBaiduTileCoord(y), z)
 	default:
 		return nil, "", fmt.Errorf("%w: unsupported overlay provider %q", ErrInvalidInput, provider)
 	}
@@ -55,4 +68,11 @@ func (s *Service) FetchOverlayTile(ctx context.Context, provider string, z, x, y
 		contentType = "image/png"
 	}
 	return body, contentType, nil
+}
+
+func formatBaiduTileCoord(v int) string {
+	if v < 0 {
+		return fmt.Sprintf("M%d", -v)
+	}
+	return fmt.Sprintf("%d", v)
 }

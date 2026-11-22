@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  bd09ToMercator,
   computeAlignedTileSpec,
+  computeBaiduAlignedTileSpec,
   computeDetourWindow,
   featuresViewport,
   formatArea,
   formatDistance,
+  gcj02ToBd09,
   gcj02ToWgs84,
   isViewportInsidePolygon,
   lineLengthMeters,
@@ -72,6 +75,26 @@ describe('geo utilities', () => {
     const [nyPx, nyPy] = lngLatToWorldPx(-73.9857, 40.7484, 14);
     const specNY = computeAlignedTileSpec(14, Math.floor(nyPx / 256), Math.floor(nyPy / 256), 'wgs84', 'gcj02');
     expect(specNY.isIdentity).toBe(true);
+  });
+
+  test('BD-09 Mercator projection and Baidu aligned tile mapping', () => {
+    const [gLng, gLat] = wgs84ToGcj02(116.3974, 39.9093);
+    const [bLng, bLat] = gcj02ToBd09(gLng, gLat);
+    expect(bLng).toBeGreaterThan(116.405);
+    expect(bLat).toBeGreaterThan(39.914);
+
+    const [mx, my] = bd09ToMercator(bLng, bLat);
+    expect(mx).toBeGreaterThan(12955000);
+    expect(mx).toBeLessThan(12965000);
+    expect(my).toBeGreaterThan(4820000);
+    expect(my).toBeLessThan(4835000);
+
+    const [px, py] = lngLatToWorldPx(116.3974, 39.9093, 12);
+    const bdSpec = computeBaiduAlignedTileSpec(12, Math.floor(px / 256), Math.floor(py / 256), 'wgs84');
+    expect(bdSpec.bz).toBeGreaterThanOrEqual(12);
+    expect(bdSpec.bz).toBeLessThanOrEqual(14);
+    expect(bdSpec.patches.length).toBeGreaterThanOrEqual(1);
+    expect(bdSpec.patches.length).toBeLessThanOrEqual(9);
   });
 
   test('viewport inside polygon detection', () => {

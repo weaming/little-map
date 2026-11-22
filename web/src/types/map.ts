@@ -68,9 +68,9 @@ export interface AdminMapSummary {
   updated_at: string;
 }
 
-export type BasemapId = 'amap-vec' | 'amap-sat' | 'google-vec' | 'google-sat' | 'osm';
+export type BasemapId = 'amap-vec' | 'amap-sat' | 'baidu-vec' | 'baidu-sat' | 'google-vec' | 'google-sat' | 'osm';
 
-export type OverlayId = 'none' | 'amap-label' | 'amap-road' | 'google-road';
+export type OverlayId = 'none' | 'amap-label' | 'amap-road' | 'baidu-road' | 'google-road';
 
 export type RouteMode = 'driving' | 'bicycling' | 'walking';
 export type RouteSegmentMode = 'auto' | 'highway' | 'national' | 'avoid-jam' | 'direct';

@@ -57,7 +57,15 @@ const ADMIN_KEY_STORAGE = 'little_map_admin_key_v1';
 function loadSavedOverlay(mapId: string): OverlayId {
   try {
     const val = localStorage.getItem(OVERLAY_STORAGE_PREFIX + mapId);
-    if (val === 'none' || val === 'amap-label' || val === 'amap-road' || val === 'google-road') return val;
+    if (
+      val === 'none' ||
+      val === 'amap-label' ||
+      val === 'amap-road' ||
+      val === 'baidu-road' ||
+      val === 'google-road'
+    ) {
+      return val;
+    }
   } catch {
     // 忽略存储读取异常
   }
