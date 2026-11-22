@@ -39,6 +39,7 @@ func NewRouter(svc *service.Service, mcpHandler http.Handler, webFS fs.FS) *gin.
 		group.GET("/search", handleSearch(svc))
 		group.GET("/regeo", handleReverseGeocode(svc))
 		group.POST("/route", handlePlanRoute(svc))
+		group.POST("/route/bypass", handleRouteBypass(svc))
 		group.GET("/tile-proxy", handleTileProxy(svc))
 		group.GET("/admin/maps", handleAdminListMaps(svc))
 		group.DELETE("/admin/maps/:id", handleAdminDeleteMap(svc))
@@ -256,6 +257,22 @@ func handlePlanRoute(svc *service.Service) gin.HandlerFunc {
 			return
 		}
 		res, err := svc.PlanRoute(c.Request.Context(), in)
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, res)
+	}
+}
+
+func handleRouteBypass(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var in service.BypassInput
+		if err := c.ShouldBindJSON(&in); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		res, err := svc.FindHighwayBypassAnchors(c.Request.Context(), in)
 		if err != nil {
 			writeServiceError(c, err)
 			return
