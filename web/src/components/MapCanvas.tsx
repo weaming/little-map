@@ -15,7 +15,7 @@ import {
   wgs84ToDisplay,
   type WgsBounds,
 } from '../map/geo';
-import type { BasemapId, DrawTool, GeoGeometry, MapFeature, OverlayId } from '../types/map';
+import type { BasemapId, DrawTool, GeoGeometry, MapFeature, OverlayId, PlaceResult } from '../types/map';
 
 interface MapCanvasProps {
   basemap: BasemapId;
@@ -24,6 +24,7 @@ interface MapCanvasProps {
   initialZoom: number;
   features: MapFeature[];
   selectedFeatureId: string | null;
+  searchPreview: PlaceResult | null;
   tool: DrawTool;
   flyTarget: {
     lng: number;
@@ -41,6 +42,7 @@ interface MapCanvasProps {
 
 const FEATURES_SOURCE = 'little-map-features';
 const DRAFT_SOURCE = 'little-map-draft';
+const PREVIEW_SOURCE = 'little-map-search-preview';
 const BASEMAP_LAYER_PREFIX = 'basemap-layer-';
 const OVERLAY_LAYER_PREFIX = 'overlay-layer-';
 
@@ -268,6 +270,7 @@ export function MapCanvas({
   initialZoom,
   features,
   selectedFeatureId,
+  searchPreview,
   tool,
   flyTarget,
   userLocation,
@@ -281,6 +284,7 @@ export function MapCanvas({
   const markersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
   const draftLabelsRef = useRef<maplibregl.Marker[]>([]);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const previewMarkerRef = useRef<maplibregl.Marker | null>(null);
   const prevBasemapRef = useRef<BasemapId>(basemap);
 
   const [draftCoords, setDraftCoords] = useState<[number, number][]>([]);
@@ -293,6 +297,7 @@ export function MapCanvas({
     overlay,
     features,
     selectedFeatureId,
+    searchPreview,
     viewportBounds,
     tool,
     draftCoords,
@@ -307,6 +312,7 @@ export function MapCanvas({
     overlay,
     features,
     selectedFeatureId,
+    searchPreview,
     viewportBounds,
     tool,
     draftCoords,
@@ -396,6 +402,49 @@ export function MapCanvas({
           'circle-color': '#ffffff',
           'circle-stroke-color': '#f59e0b',
           'circle-stroke-width': 2.5,
+        },
+      });
+    }
+
+    if (!map.getSource(PREVIEW_SOURCE)) {
+      const preview = latestRef.current.searchPreview;
+      const previewData: GeoJSON.FeatureCollection =
+        preview?.boundary
+          ? {
+              type: 'FeatureCollection',
+              features: [
+                {
+                  type: 'Feature',
+                  geometry: geometryToDisplay(preview.boundary, curBasemap) as GeoJSON.Geometry,
+                  properties: {},
+                },
+              ],
+            }
+          : { type: 'FeatureCollection', features: [] };
+
+      map.addSource(PREVIEW_SOURCE, {
+        type: 'geojson',
+        data: previewData,
+      });
+
+      map.addLayer({
+        id: 'preview-fill',
+        type: 'fill',
+        source: PREVIEW_SOURCE,
+        paint: {
+          'fill-color': '#ef4444',
+          'fill-opacity': 0.14,
+        },
+      });
+
+      map.addLayer({
+        id: 'preview-line',
+        type: 'line',
+        source: PREVIEW_SOURCE,
+        paint: {
+          'line-color': '#ef4444',
+          'line-width': 2.5,
+          'line-dasharray': [3, 2],
         },
       });
     }
@@ -521,6 +570,8 @@ export function MapCanvas({
       draftLabelsRef.current = [];
       userMarkerRef.current?.remove();
       userMarkerRef.current = null;
+      previewMarkerRef.current?.remove();
+      previewMarkerRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -725,9 +776,15 @@ export function MapCanvas({
       const sw = wgs84ToDisplay(flyTarget.bounds[0][0], flyTarget.bounds[0][1], curBasemap);
       const ne = wgs84ToDisplay(flyTarget.bounds[1][0], flyTarget.bounds[1][1], curBasemap);
       const containerW = map.getContainer().clientWidth;
-      const sidePad = containerW > 1100 ? 370 : Math.min(80, Math.round(containerW * 0.12));
+      const isMobile = containerW <= 768;
+      const sidePad = isMobile ? 28 : containerW > 1100 ? 370 : Math.min(80, Math.round(containerW * 0.12));
       map.fitBounds([sw, ne], {
-        padding: { top: 96, bottom: 72, left: sidePad, right: sidePad },
+        padding: {
+          top: isMobile ? 74 : 96,
+          bottom: isMobile ? 110 : 72,
+          left: sidePad,
+          right: sidePad,
+        },
         maxZoom: 16,
         duration: 700,
       });
@@ -757,6 +814,67 @@ export function MapCanvas({
     const displayCoord = wgs84ToDisplay(userLocation[0], userLocation[1], basemap);
     userMarkerRef.current = new maplibregl.Marker({ element: el }).setLngLat(displayCoord).addTo(map);
   }, [userLocation, basemap]);
+
+  // 渲染搜索结果临时高亮标记与边界预览（随底图自动做 WGS-84 / GCJ-02 纠偏）
+  useEffect(() => {
+    const map = mapRef.current;
+    previewMarkerRef.current?.remove();
+    previewMarkerRef.current = null;
+    if (!map) return;
+
+    const src = map.getSource(PREVIEW_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    if (src) {
+      if (searchPreview?.boundary) {
+        src.setData({
+          type: 'FeatureCollection',
+          features: [
+            {
+              type: 'Feature',
+              geometry: geometryToDisplay(searchPreview.boundary, basemap) as GeoJSON.Geometry,
+              properties: {},
+            },
+          ],
+        });
+      } else {
+        src.setData({ type: 'FeatureCollection', features: [] });
+      }
+    }
+
+    if (!searchPreview) return;
+
+    const el = document.createElement('div');
+    el.style.display = 'flex';
+    el.style.flexDirection = 'column';
+    el.style.alignItems = 'center';
+    el.style.pointerEvents = 'none';
+
+    const tag = document.createElement('div');
+    tag.textContent = searchPreview.name;
+    tag.style.background = '#dc2626';
+    tag.style.color = '#ffffff';
+    tag.style.padding = '3px 8px';
+    tag.style.borderRadius = '999px';
+    tag.style.fontSize = '12px';
+    tag.style.fontWeight = '600';
+    tag.style.boxShadow = '0 2px 8px rgba(220, 38, 38, 0.4)';
+    tag.style.whiteSpace = 'nowrap';
+    tag.style.marginBottom = '4px';
+    el.appendChild(tag);
+
+    const dot = document.createElement('span');
+    dot.style.width = '14px';
+    dot.style.height = '14px';
+    dot.style.borderRadius = '50%';
+    dot.style.background = '#dc2626';
+    dot.style.border = '3px solid #ffffff';
+    dot.style.boxShadow = '0 0 0 6px rgba(220, 38, 38, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35)';
+    el.appendChild(dot);
+
+    const displayCoord = wgs84ToDisplay(searchPreview.lng, searchPreview.lat, basemap);
+    previewMarkerRef.current = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+      .setLngLat(displayCoord)
+      .addTo(map);
+  }, [searchPreview, basemap]);
 
   function finishDraft() {
     const { draftCoords: coords, tool: curTool, onCreateGeometry: createCb } = latestRef.current;

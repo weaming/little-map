@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import {
+  CopyPlus,
   Download,
   Home,
   LocateFixed,
@@ -25,6 +26,7 @@ interface ToolbarProps {
   onBasemapChange: (basemap: BasemapId) => void;
   onOverlayChange: (overlay: OverlayId) => void;
   onShare: () => void;
+  onCloneMap: () => void;
   onCreateNew: () => void;
   onExport: () => void;
   onImportGeoJSON: (file: File) => void;
@@ -41,6 +43,7 @@ export function Toolbar({
   onBasemapChange,
   onOverlayChange,
   onShare,
+  onCloneMap,
   onCreateNew,
   onExport,
   onImportGeoJSON,
@@ -50,7 +53,7 @@ export function Toolbar({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <div className="floating-toolbar">
+    <div className={`floating-toolbar ${canEdit ? 'editable' : 'readonly'}`}>
       <button className="btn" onClick={onGoHome} title="返回首页与地图列表">
         <Home size={15} />
       </button>
@@ -63,7 +66,7 @@ export function Toolbar({
         title="选择 / 浏览"
       >
         <MousePointer2 size={15} />
-        选择
+        <span className="tool-label">选择</span>
       </button>
 
       {canEdit && (
@@ -178,12 +181,17 @@ export function Toolbar({
 
       <button className="btn primary" onClick={onShare} title="分享链接与 AI MCP 配置">
         <Share2 size={15} />
-        分享
+        <span className="tool-label">分享</span>
       </button>
 
-      <button className="btn outline" onClick={onCreateNew} title="新建空白地图">
+      <button className="btn outline" onClick={onCloneMap} title="复制当前地图为我的可编辑副本">
+        <CopyPlus size={15} />
+        <span className="tool-label">复制</span>
+      </button>
+
+      <button className="btn outline hide-mobile-readonly" onClick={onCreateNew} title="新建空白地图">
         <Plus size={15} />
-        新建
+        <span className="tool-label">新建</span>
       </button>
     </div>
   );

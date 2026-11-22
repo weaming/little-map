@@ -26,7 +26,7 @@ interface SidebarProps {
   onRefresh: () => void;
   onSelectFeature: (id: string) => void;
   onToggleVisible: (feature: MapFeature) => void;
-  onFlyTo: (lng: number, lat: number, zoom?: number, bounds?: [[number, number], [number, number]]) => void;
+  onPreviewPlace: (place: PlaceResult, bounds?: [[number, number], [number, number]]) => void;
   onAddPlaceMarker: (place: PlaceResult, asPolygon?: boolean) => void;
 }
 
@@ -41,10 +41,12 @@ export function Sidebar({
   onRefresh,
   onSelectFeature,
   onToggleVisible,
-  onFlyTo,
+  onPreviewPlace,
   onAddPlaceMarker,
 }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth <= 768 : false,
+  );
   const [titleDraft, setTitleDraft] = useState(mapMeta.title);
   const [filterText, setFilterText] = useState('');
 
@@ -108,11 +110,22 @@ export function Sidebar({
 
   if (collapsed) {
     return (
-      <div className="sidebar collapsed">
-        <div className="sidebar-header" style={{ borderBottom: 'none' }}>
-          <strong style={{ fontSize: 14 }}>{mapMeta.title}</strong>
-          <button className="btn" onClick={() => setCollapsed(false)} title="展开侧边栏">
-            <ChevronRight size={16} />
+      <div className="sidebar collapsed" onClick={() => setCollapsed(false)} style={{ cursor: 'pointer' }}>
+        <div className="sidebar-header" style={{ borderBottom: 'none', padding: '8px 12px' }}>
+          <strong style={{ fontSize: 13, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {mapMeta.title}
+          </strong>
+          <span className="badge">{features.length}</span>
+          <button
+            className="btn"
+            style={{ padding: 4 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setCollapsed(false);
+            }}
+            title="展开标注列表"
+          >
+            <ChevronRight size={15} />
           </button>
         </div>
       </div>
@@ -187,7 +200,10 @@ export function Sidebar({
                 className="search-item"
                 onClick={() => {
                   const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
-                  onFlyTo(place.lng, place.lat, 15, bounds);
+                  onPreviewPlace(place, bounds);
+                  if (window.innerWidth <= 768) {
+                    setCollapsed(true);
+                  }
                 }}
               >
                 <div style={{ minWidth: 0 }}>
@@ -270,7 +286,12 @@ export function Sidebar({
             <div
               key={f.id}
               className={`feature-item ${f.id === selectedFeatureId ? 'selected' : ''}`}
-              onClick={() => onSelectFeature(f.id)}
+              onClick={() => {
+                onSelectFeature(f.id);
+                if (window.innerWidth <= 768) {
+                  setCollapsed(true);
+                }
+              }}
             >
               <span className="color-dot" style={{ background: f.color || '#2563eb' }} />
               <span style={{ color: '#64748b', display: 'flex' }}>{featureIcon(f.geometry.type)}</span>

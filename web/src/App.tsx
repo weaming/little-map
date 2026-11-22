@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  cloneMap,
   createMap,
   deleteAdminMap,
   deleteFeatures,
@@ -154,6 +155,7 @@ export function App() {
     seq: number;
   } | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+  const [searchPreview, setSearchPreview] = useState<PlaceResult | null>(null);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
 
@@ -296,6 +298,25 @@ export function App() {
       notify(`创建失败：${extractErrorMessage(err).message}`);
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function handleCloneMap() {
+    if (!mapMeta) return;
+    try {
+      const resp = await cloneMap(mapMeta.id);
+      const nextUrl = `/?m=${encodeURIComponent(resp.map.id)}&t=${encodeURIComponent(resp.edit_token)}`;
+      window.history.pushState({}, '', nextUrl);
+      etagRef.current = undefined;
+      autoLocatedMapRef.current = resp.map.id;
+      setMapId(resp.map.id);
+      setEditToken(resp.edit_token);
+      setSelectedFeatureId(null);
+      setSearchPreview(null);
+      saveRecentMap({ id: resp.map.id, title: resp.map.title, editToken: resp.edit_token });
+      notify(`已复制为「${resp.map.title}」，现在可自由编辑`);
+    } catch (err) {
+      notify(`复制失败：${extractErrorMessage(err).message}`);
     }
   }
 
@@ -469,6 +490,7 @@ export function App() {
       setFeatures((prev) => [...prev, ...resp.features]);
       if (resp.features[0]) {
         setSelectedFeatureId(resp.features[0].id);
+        setSearchPreview(null);
         const bounds = geometryBounds(resp.features[0].geometry) ?? undefined;
         const [lng, lat] = geometryCenter(resp.features[0].geometry);
         setFlyTarget({ lng, lat, bounds, seq: Date.now() });
@@ -699,10 +721,14 @@ export function App() {
             initialZoom={savedView ? savedView.zoom : mapMeta.zoom}
             features={features}
             selectedFeatureId={selectedFeatureId}
+            searchPreview={searchPreview}
             tool={tool}
             flyTarget={flyTarget}
             userLocation={userLocation}
-            onSelectFeature={setSelectedFeatureId}
+            onSelectFeature={(id) => {
+              setSelectedFeatureId(id);
+              if (id === null) setSearchPreview(null);
+            }}
             onCreateGeometry={handleCreateGeometry}
             onToolCancel={() => setTool('select')}
             onViewChange={(view) => saveView(mapMeta.id, view)}
@@ -720,6 +746,7 @@ export function App() {
               saveOverlay(mapMeta.id, next);
             }}
             onShare={() => setShowShare(true)}
+            onCloneMap={() => void handleCloneMap()}
             onCreateNew={() => void handleCreateNewMap()}
             onExport={() => {
               window.location.href = getExportUrl(mapMeta.id);
@@ -747,7 +774,10 @@ export function App() {
             onRefresh={() => void syncMap(true)}
             onSelectFeature={handleSelectFromSidebar}
             onToggleVisible={(f) => void handleSaveFeature({ ...f, visible: !f.visible })}
-            onFlyTo={(lng, lat, zoom, bounds) => setFlyTarget({ lng, lat, zoom, bounds, seq: Date.now() })}
+            onPreviewPlace={(place, bounds) => {
+              setSearchPreview(place);
+              setFlyTarget({ lng: place.lng, lat: place.lat, zoom: 15, bounds, seq: Date.now() });
+            }}
             onAddPlaceMarker={handleAddPlaceMarker}
           />
 
