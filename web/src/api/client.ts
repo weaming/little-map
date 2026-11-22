@@ -7,6 +7,8 @@ import type {
   MapMeta,
   MapSnapshot,
   PlaceResult,
+  RouteMode,
+  RouteResult,
   ServerCapabilities,
 } from '../types/map';
 
@@ -142,6 +144,19 @@ export async function reverseGeocode(lng: number, lat: number): Promise<PlaceRes
     timeout: 3000,
   });
   return data.result ?? null;
+}
+
+export async function planRoute(
+  mode: RouteMode,
+  waypoints: [number, number][],
+  provider = 'auto',
+): Promise<RouteResult> {
+  const { data } = await http.post<RouteResult>('/route', {
+    mode,
+    waypoints,
+    provider,
+  });
+  return data;
 }
 
 export async function fetchAdminMaps(adminKey: string): Promise<AdminMapSummary[]> {

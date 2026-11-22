@@ -8,6 +8,7 @@ import {
   MousePointer2,
   Pentagon,
   Plus,
+  Route,
   Ruler,
   Share2,
   Spline,
@@ -115,6 +116,14 @@ export function Toolbar({
       >
         <SquareDashedMousePointer size={15} />
         测面
+      </button>
+      <button
+        className={`btn ${tool === 'route' ? 'active' : ''}`}
+        onClick={() => onToolChange('route')}
+        title="规划骑行 / 徒步路线"
+      >
+        <Route size={15} />
+        规划
       </button>
 
       <button className="btn" onClick={onLocateMe} title="定位到当前位置（自动纠偏）">

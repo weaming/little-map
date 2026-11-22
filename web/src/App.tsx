@@ -21,6 +21,7 @@ import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import {
   featuresViewport,
+  formatDistance,
   geometryBounds,
   geometryCenter,
   getCurrentPositionWgs84,
@@ -36,6 +37,7 @@ import type {
   MapMeta,
   OverlayId,
   PlaceResult,
+  RouteResult,
   ServerCapabilities,
 } from './types/map';
 
@@ -163,6 +165,11 @@ export function App() {
   } | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [searchPreview, setSearchPreview] = useState<PlaceResult | null>(null);
+  const [externalWaypoint, setExternalWaypoint] = useState<{
+    coord: [number, number];
+    name?: string;
+    seq: number;
+  } | null>(null);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
 
@@ -299,7 +306,6 @@ export function App() {
       const nextUrl = `/?m=${encodeURIComponent(resp.map.id)}&t=${encodeURIComponent(resp.edit_token)}`;
       window.history.pushState({}, '', nextUrl);
       etagRef.current = undefined;
-      autoLocatedMapRef.current = resp.map.id;
       setMapId(resp.map.id);
       setEditToken(resp.edit_token);
       setMapMeta(resp.map);
@@ -323,7 +329,6 @@ export function App() {
       const nextUrl = `/?m=${encodeURIComponent(resp.map.id)}&t=${encodeURIComponent(resp.edit_token)}`;
       window.history.pushState({}, '', nextUrl);
       etagRef.current = undefined;
-      autoLocatedMapRef.current = resp.map.id;
       setMapId(resp.map.id);
       setEditToken(resp.edit_token);
       setSelectedFeatureId(null);
@@ -409,6 +414,43 @@ export function App() {
       }
       setTool('select');
       etagRef.current = undefined;
+    } catch (err) {
+      const { message, isConflict } = extractErrorMessage(err);
+      notify(message, isConflict);
+    }
+  }
+
+  async function handleSaveRoute(route: RouteResult, waypointNames: string[]) {
+    if (!mapMeta || !canEdit) return;
+    const modeLabel = route.mode === 'walking' ? '徒步路线' : '骑行路线';
+    const mins = Math.max(1, Math.round(route.duration_seconds / 60));
+    const durText = mins >= 60 ? `${Math.floor(mins / 60)} 小时 ${mins % 60} 分钟` : `${mins} 分钟`;
+    const distText = formatDistance(route.distance_meters);
+    const namedStops = waypointNames.filter((n) => n.trim() !== '');
+    const title =
+      namedStops.length >= 2
+        ? `${modeLabel}：${namedStops[0]} → ${namedStops[namedStops.length - 1]}`
+        : `${modeLabel} · ${distText}`;
+    const stopsLine = namedStops.length > 0 ? `\n- 途经点：${namedStops.join(' → ')}` : '';
+    try {
+      const resp = await upsertFeatures(mapMeta.id, editToken, mapMeta.revision, [
+        {
+          title,
+          category: modeLabel,
+          description: `- 方式：${modeLabel}\n- 总距离：${distText}\n- 预计耗时：约 ${durText}${stopsLine}\n- 规划源：${route.provider.toUpperCase()}`,
+          color: pickDominantColor(features, 'LineString', route.mode === 'walking' ? '#16a34a' : '#2563eb'),
+          geometry: route.geometry,
+          visible: true,
+        },
+      ]);
+      setMapMeta((prev) => (prev ? { ...prev, revision: resp.revision } : prev));
+      setFeatures((prev) => [...prev, ...resp.features]);
+      if (resp.features[0]) {
+        setSelectedFeatureId(resp.features[0].id);
+      }
+      setTool('select');
+      etagRef.current = undefined;
+      notify(`已保存${modeLabel}（${distText}）`);
     } catch (err) {
       const { message, isConflict } = extractErrorMessage(err);
       notify(message, isConflict);
@@ -562,13 +604,17 @@ export function App() {
   }
 
   function handleSelectFromSidebar(id: string) {
-    setSelectedFeatureId(id);
     const target = features.find((f) => f.id === id);
-    if (target) {
-      const [lng, lat] = geometryCenter(target.geometry);
-      const bounds = geometryBounds(target.geometry) ?? undefined;
-      setFlyTarget({ lng, lat, bounds, seq: Date.now() });
+    if (!target) return;
+    const [lng, lat] = geometryCenter(target.geometry);
+    if (tool === 'route') {
+      setExternalWaypoint({ coord: [lng, lat], name: target.title, seq: Date.now() });
+      notify(`已添加途经点「${target.title || '未命名标注'}」`);
+      return;
     }
+    setSelectedFeatureId(id);
+    const bounds = geometryBounds(target.geometry) ?? undefined;
+    setFlyTarget({ lng, lat, bounds, seq: Date.now() });
   }
 
   // 无 mapId 时展示欢迎页
@@ -732,6 +778,7 @@ export function App() {
             key={mapMeta.id}
             basemap={basemap}
             overlay={overlay}
+            canEdit={canEdit}
             initialCenter={savedView ? [savedView.lng, savedView.lat] : [mapMeta.center_lng, mapMeta.center_lat]}
             initialZoom={savedView ? savedView.zoom : mapMeta.zoom}
             features={features}
@@ -740,11 +787,13 @@ export function App() {
             tool={tool}
             flyTarget={flyTarget}
             userLocation={userLocation}
+            externalWaypoint={externalWaypoint}
             onSelectFeature={(id) => {
               setSelectedFeatureId(id);
               if (id === null) setSearchPreview(null);
             }}
             onCreateGeometry={handleCreateGeometry}
+            onSaveRoute={(route, names) => void handleSaveRoute(route, names)}
             onToolCancel={() => setTool('select')}
             onViewChange={(view) => saveView(mapMeta.id, view)}
           />

@@ -72,4 +72,14 @@ export type BasemapId = 'amap-vec' | 'amap-sat' | 'google-vec' | 'google-sat' | 
 
 export type OverlayId = 'none' | 'amap-label' | 'amap-road' | 'google-road';
 
-export type DrawTool = 'select' | 'point' | 'line' | 'polygon' | 'measure-distance' | 'measure-area';
+export type RouteMode = 'bicycling' | 'walking';
+
+export interface RouteResult {
+  mode: RouteMode;
+  provider: string;
+  distance_meters: number;
+  duration_seconds: number;
+  geometry: GeoGeometry;
+}
+
+export type DrawTool = 'select' | 'point' | 'line' | 'polygon' | 'measure-distance' | 'measure-area' | 'route';

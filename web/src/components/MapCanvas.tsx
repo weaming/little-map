@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
+import { extractErrorMessage, planRoute } from '../api/client';
 import { ensureAlignedTileProtocol } from '../map/alignedProtocol';
 import {
   BASEMAPS,
@@ -15,11 +16,21 @@ import {
   wgs84ToDisplay,
   type WgsBounds,
 } from '../map/geo';
-import type { BasemapId, DrawTool, GeoGeometry, MapFeature, OverlayId, PlaceResult } from '../types/map';
+import type {
+  BasemapId,
+  DrawTool,
+  GeoGeometry,
+  MapFeature,
+  OverlayId,
+  PlaceResult,
+  RouteMode,
+  RouteResult,
+} from '../types/map';
 
 interface MapCanvasProps {
   basemap: BasemapId;
   overlay: OverlayId;
+  canEdit: boolean;
   initialCenter: [number, number];
   initialZoom: number;
   features: MapFeature[];
@@ -34,8 +45,10 @@ interface MapCanvasProps {
     seq: number;
   } | null;
   userLocation: [number, number] | null;
+  externalWaypoint?: { coord: [number, number]; name?: string; seq: number } | null;
   onSelectFeature: (id: string | null) => void;
   onCreateGeometry: (geometry: GeoGeometry) => void;
+  onSaveRoute: (route: RouteResult, waypointNames: string[]) => void;
   onToolCancel: () => void;
   onViewChange?: (view: { lng: number; lat: number; zoom: number }) => void;
 }
@@ -209,25 +222,53 @@ function buildFeatureCollection(
   };
 }
 
+function formatDuration(seconds: number): string {
+  const mins = Math.max(1, Math.round(seconds / 60));
+  if (mins >= 60) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h} 小时 ${m} 分钟` : `${h} 小时`;
+  }
+  return `${mins} 分钟`;
+}
+
 function buildDraftCollection(
   draftCoords: [number, number][],
   hoverCoord: [number, number] | null,
   tool: DrawTool,
   basemap: BasemapId,
+  routeGeometry?: GeoGeometry | null,
 ): GeoJSON.FeatureCollection {
   if (draftCoords.length === 0) {
     return { type: 'FeatureCollection', features: [] };
   }
 
-  const previewWgs = hoverCoord ? [...draftCoords, hoverCoord] : draftCoords;
   const fixedDisplay = draftCoords.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap));
-  const previewDisplay = previewWgs.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap));
-
   const out: GeoJSON.Feature[] = fixedDisplay.map((coord) => ({
     type: 'Feature',
     geometry: { type: 'Point', coordinates: coord },
     properties: {},
   }));
+
+  if (tool === 'route') {
+    if (routeGeometry) {
+      out.push({
+        type: 'Feature',
+        geometry: geometryToDisplay(routeGeometry, basemap) as GeoJSON.Geometry,
+        properties: {},
+      });
+    } else if (fixedDisplay.length >= 2) {
+      out.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: fixedDisplay },
+        properties: {},
+      });
+    }
+    return { type: 'FeatureCollection', features: out };
+  }
+
+  const previewWgs = hoverCoord ? [...draftCoords, hoverCoord] : draftCoords;
+  const previewDisplay = previewWgs.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap));
 
   if (previewDisplay.length >= 2) {
     const isPoly = tool === 'polygon' || tool === 'measure-area';
@@ -266,6 +307,7 @@ function createMeasureMarker(
 export function MapCanvas({
   basemap,
   overlay,
+  canEdit,
   initialCenter,
   initialZoom,
   features,
@@ -274,8 +316,10 @@ export function MapCanvas({
   tool,
   flyTarget,
   userLocation,
+  externalWaypoint,
   onSelectFeature,
   onCreateGeometry,
+  onSaveRoute,
   onToolCancel,
   onViewChange,
 }: MapCanvasProps) {
@@ -286,11 +330,17 @@ export function MapCanvas({
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const previewMarkerRef = useRef<maplibregl.Marker | null>(null);
   const prevBasemapRef = useRef<BasemapId>(basemap);
+  const routeReqSeqRef = useRef(0);
 
   const [draftCoords, setDraftCoords] = useState<[number, number][]>([]);
+  const [draftNames, setDraftNames] = useState<string[]>([]);
   const [hoverCoord, setHoverCoord] = useState<[number, number] | null>(null);
   const [measureFrozen, setMeasureFrozen] = useState(false);
   const [viewportBounds, setViewportBounds] = useState<WgsBounds | null>(null);
+  const [routeMode, setRouteMode] = useState<RouteMode>('bicycling');
+  const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState('');
 
   const latestRef = useRef({
     basemap,
@@ -513,6 +563,7 @@ export function MapCanvas({
         if (last && Math.abs(last[0] - nextPt[0]) < 1e-7 && Math.abs(last[1] - nextPt[1]) < 1e-7) {
           return prev;
         }
+        setDraftNames((names) => [...names, '']);
         return [...prev, nextPt];
       });
     });
@@ -581,13 +632,64 @@ export function MapCanvas({
   // 切换工具时清空未完成草图并更新光标样式
   useEffect(() => {
     setDraftCoords([]);
+    setDraftNames([]);
     setHoverCoord(null);
     setMeasureFrozen(false);
+    setRouteResult(null);
+    setRouteError('');
+    setRouteLoading(false);
     const map = mapRef.current;
     if (map) {
       map.getCanvas().style.cursor = tool === 'select' ? '' : 'crosshair';
     }
   }, [tool]);
+
+  // 接收来自侧边栏点选的已有标注点作为规划途经点
+  useEffect(() => {
+    if (!externalWaypoint || tool !== 'route') return;
+    const pt: [number, number] = [
+      Number(externalWaypoint.coord[0].toFixed(6)),
+      Number(externalWaypoint.coord[1].toFixed(6)),
+    ];
+    setDraftCoords((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && Math.abs(last[0] - pt[0]) < 1e-7 && Math.abs(last[1] - pt[1]) < 1e-7) {
+        return prev;
+      }
+      setDraftNames((names) => [...names, externalWaypoint.name ?? '']);
+      return [...prev, pt];
+    });
+  }, [externalWaypoint, tool]);
+
+  // 规划模式下途经点 >= 2 时自动请求骑行/徒步路线
+  useEffect(() => {
+    if (tool !== 'route' || draftCoords.length < 2) {
+      setRouteResult(null);
+      setRouteError('');
+      setRouteLoading(false);
+      return;
+    }
+
+    const seq = ++routeReqSeqRef.current;
+    setRouteLoading(true);
+    setRouteError('');
+
+    void planRoute(routeMode, draftCoords)
+      .then((res) => {
+        if (routeReqSeqRef.current !== seq) return;
+        setRouteResult(res);
+      })
+      .catch((err) => {
+        if (routeReqSeqRef.current !== seq) return;
+        setRouteResult(null);
+        setRouteError(extractErrorMessage(err).message);
+      })
+      .finally(() => {
+        if (routeReqSeqRef.current === seq) {
+          setRouteLoading(false);
+        }
+      });
+  }, [tool, routeMode, draftCoords]);
 
   // 键盘 ESC 退出绘制或测距
   useEffect(() => {
@@ -686,8 +788,27 @@ export function MapCanvas({
 
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        if (latestRef.current.tool === 'select') {
+        const curTool = latestRef.current.tool;
+        if (curTool === 'select') {
           latestRef.current.onSelectFeature(f.id);
+          return;
+        }
+        if (
+          curTool === 'route' ||
+          curTool === 'line' ||
+          curTool === 'polygon' ||
+          curTool === 'measure-distance' ||
+          curTool === 'measure-area'
+        ) {
+          const snapped: [number, number] = [Number(lng.toFixed(6)), Number(lat.toFixed(6))];
+          setDraftCoords((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && Math.abs(last[0] - snapped[0]) < 1e-7 && Math.abs(last[1] - snapped[1]) < 1e-7) {
+              return prev;
+            }
+            setDraftNames((names) => [...names, f.title || '']);
+            return [...prev, snapped];
+          });
         }
       });
 
@@ -698,21 +819,35 @@ export function MapCanvas({
     }
   }, [features, basemap, selectedFeatureId, viewportBounds]);
 
-  // 同步绘制/测距草图图层与图形上的分段距离/面积标签
+  // 同步绘制/测距/路线规划草图图层与图形标签
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const activeHover = measureFrozen ? null : hoverCoord;
+    const activeHover = measureFrozen || tool === 'route' ? null : hoverCoord;
     const src = map.getSource(DRAFT_SOURCE) as maplibregl.GeoJSONSource | undefined;
     if (src) {
-      src.setData(buildDraftCollection(draftCoords, activeHover, tool, basemap));
+      src.setData(buildDraftCollection(draftCoords, activeHover, tool, basemap, routeResult?.geometry));
     }
 
     for (const label of draftLabelsRef.current) {
       label.remove();
     }
     draftLabelsRef.current = [];
+
+    if (tool === 'route' && draftCoords.length > 0) {
+      const nextLabels: maplibregl.Marker[] = [];
+      draftCoords.forEach((pt, idx) => {
+        const isStart = idx === 0;
+        const isEnd = idx === draftCoords.length - 1 && draftCoords.length >= 2;
+        const name = draftNames[idx];
+        const prefix = isStart ? '起点' : isEnd ? '终点' : `途经 ${idx}`;
+        const tag = name ? `${prefix}: ${name}` : prefix;
+        nextLabels.push(createMeasureMarker(map, pt, basemap, tag, isEnd ? 'total' : 'node', [0, -18]));
+      });
+      draftLabelsRef.current = nextLabels;
+      return;
+    }
 
     const isLineLike = tool === 'line' || tool === 'measure-distance';
     const isPolyLike = tool === 'polygon' || tool === 'measure-area';
@@ -764,7 +899,7 @@ export function MapCanvas({
     }
 
     draftLabelsRef.current = nextLabels;
-  }, [draftCoords, hoverCoord, measureFrozen, tool, basemap]);
+  }, [draftCoords, draftNames, hoverCoord, measureFrozen, routeResult, tool, basemap]);
 
   // 飞行定位到目标 WGS-84 坐标或外接包围盒（仅在 flyTarget 变化时触发，切底图不重新飞转）
   useEffect(() => {
@@ -897,6 +1032,78 @@ export function MapCanvas({
           <span>点击地图任意位置添加点标注</span>
           <button className="btn" onClick={onToolCancel}>
             退出 (ESC)
+          </button>
+        </div>
+      );
+    }
+
+    if (tool === 'route') {
+      return (
+        <div className="draw-banner">
+          <button
+            className={`btn ${routeMode === 'bicycling' ? 'primary' : ''}`}
+            onClick={() => setRouteMode('bicycling')}
+          >
+            骑行
+          </button>
+          <button
+            className={`btn ${routeMode === 'walking' ? 'primary' : ''}`}
+            onClick={() => setRouteMode('walking')}
+          >
+            徒步
+          </button>
+          <span>
+            {draftCoords.length < 2
+              ? draftCoords.length === 0
+                ? '点击地图或已有标注点选择起点'
+                : '继续点击地图或已有标注点选择终点'
+              : routeLoading
+                ? '正在规划路线...'
+                : routeError
+                  ? `规划失败：${routeError}`
+                  : routeResult
+                    ? `${formatDistance(routeResult.distance_meters)} · 约 ${formatDuration(routeResult.duration_seconds)} (${routeResult.provider.toUpperCase()})`
+                    : ''}
+          </span>
+          {draftCoords.length > 0 && (
+            <button
+              className="btn"
+              onClick={() => {
+                setDraftCoords((prev) => prev.slice(0, -1));
+                setDraftNames((prev) => prev.slice(0, -1));
+              }}
+            >
+              撤销一点
+            </button>
+          )}
+          {canEdit && routeResult && (
+            <button
+              className="btn primary"
+              onClick={() => {
+                onSaveRoute(routeResult, draftNames);
+                setDraftCoords([]);
+                setDraftNames([]);
+                setRouteResult(null);
+              }}
+            >
+              保存为路线
+            </button>
+          )}
+          {draftCoords.length > 0 && (
+            <button
+              className="btn"
+              onClick={() => {
+                setDraftCoords([]);
+                setDraftNames([]);
+                setRouteResult(null);
+                setRouteError('');
+              }}
+            >
+              清空
+            </button>
+          )}
+          <button className="btn" onClick={onToolCancel}>
+            退出
           </button>
         </div>
       );
