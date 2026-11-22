@@ -24,9 +24,11 @@ body,
   padding: 0;
   width: 100%;
   height: 100%;
+  height: 100dvh;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
   color: var(--text);
   overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .app-shell {
@@ -332,6 +334,11 @@ body,
   overflow: hidden;
 }
 
+.inspector.compact {
+  bottom: auto;
+  max-height: calc(100dvh - 100px);
+}
+
 .inspector-body {
   flex: 1;
   overflow-y: auto;
@@ -515,6 +522,7 @@ body,
   justify-content: center;
   background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
   padding: 20px;
+  overflow-y: auto;
 }
 
 .welcome-card {
@@ -525,4 +533,123 @@ body,
   border-radius: 16px;
   padding: 28px;
   box-shadow: var(--shadow);
+  margin: auto;
+}
+
+@media (max-width: 768px) {
+  .floating-toolbar {
+    top: max(10px, env(safe-area-inset-top));
+    left: 10px;
+    right: 10px;
+    transform: none;
+    max-width: none;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 5px 8px;
+    gap: 4px;
+  }
+
+  .floating-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .floating-toolbar .btn {
+    padding: 7px 9px;
+    font-size: 13px;
+    min-height: 34px;
+  }
+
+  .floating-toolbar.readonly .hide-mobile-readonly {
+    display: none;
+  }
+
+  .floating-toolbar .select-input {
+    padding: 6px 8px;
+    font-size: 13px;
+    min-height: 34px;
+    flex-shrink: 0;
+  }
+
+  /* 移动端折叠态变为左下角紧凑胶囊，避免与顶部工具栏重叠 */
+  .sidebar.collapsed {
+    top: auto;
+    left: 12px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    border-radius: 999px;
+    max-width: calc(100vw - 76px);
+  }
+
+  /* 移动端展开态变为底部抽屉（Bottom Sheet） */
+  .sidebar:not(.collapsed) {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 64dvh;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 30;
+  }
+
+  /* 移动端详情面板变为底部抽屉卡片，上方保留清晰地图视野 */
+  .inspector {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 62dvh;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 32;
+  }
+
+  .inspector.compact {
+    bottom: 0;
+    max-height: 42dvh;
+  }
+
+  .draw-banner {
+    bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
+    max-width: calc(100vw - 20px);
+    flex-wrap: wrap;
+    justify-content: center;
+    border-radius: 14px;
+    padding: 8px 12px;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .toast {
+    left: 12px;
+    right: 12px;
+    bottom: max(68px, calc(env(safe-area-inset-bottom) + 58px));
+    justify-content: space-between;
+  }
+
+  .modal-card {
+    max-height: 86dvh;
+    overflow-y: auto;
+  }
+
+  .welcome-screen {
+    padding: 16px;
+    align-items: flex-start;
+  }
+
+  .welcome-card {
+    padding: 20px;
+  }
+
+  /* 防止 iOS Safari 聚焦输入框时自动放大页面 */
+  .text-input,
+  .textarea-input,
+  .map-title-input {
+    font-size: 16px;
+  }
 }
