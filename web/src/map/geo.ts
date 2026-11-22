@@ -1,4 +1,4 @@
-import type { BasemapId, GeoGeometry, MapFeature, OverlayId } from '../types/map';
+import type { BasemapId, GeoGeometry, MapFeature, OverlayId, RouteMode } from '../types/map';
 
 const EARTH_RADIUS_M = 6371008.8;
 const GCJ_AXIS = 6378245.0;
@@ -367,6 +367,131 @@ export function pickDominantColor(
     }
   }
   return bestColor;
+}
+
+// 计算点击点最接近的折线段，返回应插入新途经点的位置索引 (1 .. waypoints.length-1)。
+export function findNearestSegmentInsertIndex(waypoints: [number, number][], pt: [number, number]): number {
+  if (waypoints.length < 2) return waypoints.length;
+  let bestIdx = waypoints.length - 1;
+  let bestDistSq = Infinity;
+
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const [ax, ay] = waypoints[i];
+    const [bx, by] = waypoints[i + 1];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = 0;
+    if (lenSq > 0) {
+      t = Math.max(0, Math.min(1, ((pt[0] - ax) * dx + (pt[1] - ay) * dy) / lenSq));
+    }
+    const px = ax + t * dx;
+    const py = ay + t * dy;
+    const distSq = (pt[0] - px) * (pt[0] - px) + (pt[1] - py) * (pt[1] - py);
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq;
+      bestIdx = i + 1;
+    }
+  }
+  return bestIdx;
+}
+
+// 原地替换折线的 [startIdx .. endIdx] 区间为新轨迹（自动去重衔接点），其余原始顶点 100% 保留。
+export function spliceLineSegment(
+  coords: [number, number][],
+  startIdx: number,
+  endIdx: number,
+  replacement: [number, number][],
+): [number, number][] {
+  if (coords.length === 0 || startIdx < 0 || endIdx >= coords.length || startIdx > endIdx) {
+    return coords;
+  }
+  const head = coords.slice(0, startIdx);
+  const tail = coords.slice(endIdx + 1);
+  const combined: [number, number][] = [...head];
+
+  const pushDedup = (pt: [number, number]) => {
+    const rounded: [number, number] = [Number(pt[0].toFixed(6)), Number(pt[1].toFixed(6))];
+    const last = combined[combined.length - 1];
+    if (last && last[0] === rounded[0] && last[1] === rounded[1]) return;
+    combined.push(rounded);
+  };
+
+  for (const pt of replacement) pushDedup(pt);
+  for (const pt of tail) pushDedup(pt);
+  return combined;
+}
+
+// 在原折线上查找距离目标点最近的真实顶点索引与距离（米）。
+export function findNearestVertexIndex(
+  coords: [number, number][],
+  pt: [number, number],
+): { index: number; distMeters: number } {
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const d = haversineMeters(coords[i][0], coords[i][1], pt[0], pt[1]);
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  return { index: bestIdx, distMeters: bestDist };
+}
+
+// 根据出行方式与必经点偏离原路的距离，自动计算建议的局部换路区间 [startIdx .. endIdx]。
+export function computeDetourWindow(
+  coords: [number, number][],
+  viaPoints: [number, number][],
+  mode: RouteMode,
+): { startIdx: number; endIdx: number } {
+  if (coords.length < 2 || viaPoints.length === 0) {
+    return { startIdx: 0, endIdx: Math.max(0, coords.length - 1) };
+  }
+
+  let minNear = coords.length - 1;
+  let maxNear = 0;
+  let maxDist = 0;
+  for (const vp of viaPoints) {
+    const { index, distMeters } = findNearestVertexIndex(coords, vp);
+    if (index < minNear) minNear = index;
+    if (index > maxNear) maxNear = index;
+    if (distMeters > maxDist) maxDist = distMeters;
+  }
+
+  const [factor, minR, maxR] =
+    mode === 'walking' ? [2.5, 200, 3000] : mode === 'driving' ? [3.0, 1000, 25000] : [2.5, 400, 6000];
+  const radius = Math.max(minR, Math.min(maxR, maxDist * factor));
+
+  let startIdx = minNear;
+  let accBack = 0;
+  while (startIdx > 0 && accBack < radius) {
+    accBack += haversineMeters(
+      coords[startIdx][0],
+      coords[startIdx][1],
+      coords[startIdx - 1][0],
+      coords[startIdx - 1][1],
+    );
+    startIdx--;
+  }
+
+  let endIdx = maxNear;
+  let accFwd = 0;
+  while (endIdx < coords.length - 1 && accFwd < radius) {
+    accFwd += haversineMeters(
+      coords[endIdx][0],
+      coords[endIdx][1],
+      coords[endIdx + 1][0],
+      coords[endIdx + 1][1],
+    );
+    endIdx++;
+  }
+
+  if (startIdx === endIdx) {
+    if (startIdx > 0) startIdx--;
+    else if (endIdx < coords.length - 1) endIdx++;
+  }
+  return { startIdx, endIdx };
 }
 
 // 射线法判断点是否在多边形环内部。

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   computeAlignedTileSpec,
+  computeDetourWindow,
   featuresViewport,
   formatArea,
   formatDistance,
@@ -10,6 +11,7 @@ import {
   lngLatToWorldPx,
   pickDominantColor,
   polygonAreaSqMeters,
+  spliceLineSegment,
   wgs84ToGcj02,
   worldPxToLngLat,
 } from './geo';
@@ -140,5 +142,24 @@ describe('geo utilities', () => {
     expect(pickDominantColor(sample, 'Point', '#2563eb')).toBe('#dc2626');
     expect(pickDominantColor(sample, 'LineString', '#2563eb')).toBe('#7c3aed');
     expect(pickDominantColor(sample, 'Polygon', '#2563eb')).toBe('#2563eb');
+  });
+
+  test('spliceLineSegment and computeDetourWindow adapt radius by route mode', () => {
+    const orig: [number, number][] = Array.from({ length: 50 }, (_, i) => [116.0 + i * 0.002, 39.9]);
+    const via: [number, number] = [116.05, 39.905]; // 中段偏离约 550m
+
+    const walkWin = computeDetourWindow(orig, [via], 'walking');
+    const driveWin = computeDetourWindow(orig, [via], 'driving');
+    expect(walkWin.startIdx).toBeLessThan(walkWin.endIdx);
+    // 驾车窗口应比徒步窗口更宽
+    expect(driveWin.endIdx - driveWin.startIdx).toBeGreaterThanOrEqual(walkWin.endIdx - walkWin.startIdx);
+
+    const replaced = spliceLineSegment(orig, 10, 12, [
+      orig[10],
+      [116.022, 39.905],
+      orig[12],
+    ]);
+    expect(replaced[0]).toEqual(orig[0]);
+    expect(replaced[replaced.length - 1]).toEqual(orig[orig.length - 1]);
   });
 });
