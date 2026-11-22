@@ -37,9 +37,12 @@ export function FeatureInspector({ feature, canEdit, onSave, onDelete, onClose }
     setCategory(feature.category);
     setColor(feature.color || '#2563eb');
     setDescription(feature.description);
+  }, [feature]);
+
+  useEffect(() => {
     setEditing(canEdit && !isMobileViewport());
     setPreviewMode(false);
-  }, [feature, canEdit]);
+  }, [feature.id, canEdit]);
 
   const metricText = useMemo(() => {
     if (feature.geometry.type === 'Point') {
@@ -171,7 +174,16 @@ export function FeatureInspector({ feature, canEdit, onSave, onDelete, onClose }
                 type="button"
                 className={`swatch ${color === hex ? 'active' : ''}`}
                 style={{ background: hex }}
-                onClick={() => setColor(hex)}
+                onClick={() => {
+                  setColor(hex);
+                  onSave({
+                    ...feature,
+                    title: title.trim() || '未命名标注',
+                    category: category.trim(),
+                    color: hex,
+                    description,
+                  });
+                }}
               />
             ))}
           </div>
