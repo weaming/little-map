@@ -50,22 +50,43 @@ body,
   z-index: 20;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 4px;
+  padding: 5px 8px;
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: var(--shadow);
   max-width: calc(100vw - 28px);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.floating-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.floating-toolbar .btn {
+  padding: 5px 8px;
+  gap: 4px;
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+
+.floating-toolbar .select-input {
+  padding: 5px 6px;
+  font-size: 12.5px;
+  max-width: 132px;
+  flex-shrink: 0;
 }
 
 .tool-divider {
   width: 1px;
-  height: 22px;
+  height: 20px;
   background: var(--border);
   margin: 0 2px;
+  flex-shrink: 0;
 }
 
 .btn {
