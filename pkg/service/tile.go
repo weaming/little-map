@@ -21,6 +21,8 @@ func (s *Service) FetchOverlayTile(ctx context.Context, provider string, z, x, y
 	case "amap-road":
 		sub := (x+y)%4 + 1
 		targetURL = fmt.Sprintf("https://webst0%d.is.autonavi.com/appmaptile?style=8&x=%d&y=%d&z=%d", sub, x, y, z)
+	case "amap-traffic":
+		targetURL = fmt.Sprintf("https://tm.amap.com/trafficengine/mapabc/traffictile?v=1.0&t=1&x=%d&y=%d&z=%d", x, y, z)
 	case "google-road":
 		sub := (x + y) % 4
 		targetURL = fmt.Sprintf("https://mt%d.google.com/vt/lyrs=h&hl=zh-CN&scale=2&x=%d&y=%d&z=%d", sub, x, y, z)

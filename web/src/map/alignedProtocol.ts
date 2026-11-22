@@ -25,8 +25,12 @@ function putCachedAligned(key: string, data: ArrayBuffer) {
   alignedTileCache.set(key, data.slice(0));
 }
 
-async function fetchImageBitmap(url: string, signal?: AbortSignal): Promise<ImageBitmap | null> {
-  const resp = await fetch(url, { signal, cache: 'force-cache' });
+async function fetchImageBitmap(
+  url: string,
+  signal?: AbortSignal,
+  cacheMode: RequestCache = 'force-cache',
+): Promise<ImageBitmap | null> {
+  const resp = await fetch(url, { signal, cache: cacheMode });
   if (!resp.ok) return null;
   const blob = await resp.blob();
   return createImageBitmap(blob);
@@ -39,12 +43,16 @@ export function ensureAlignedTileProtocol() {
 
   maplibregl.addProtocol('aligned-tile', async (params, abortController) => {
     const rawPath = params.url.replace(/^aligned-tile:\/\//, '');
-    const cached = getCachedAligned(rawPath);
+    const [provider, targetCrs, zStr, xStr, yStr] = rawPath.split('/');
+    const isTraffic = provider === 'amap-traffic';
+    const cacheKey = isTraffic ? `${rawPath}@${Math.floor(Date.now() / 120000)}` : rawPath;
+    const cacheMode: RequestCache = isTraffic ? 'default' : 'force-cache';
+
+    const cached = getCachedAligned(cacheKey);
     if (cached) {
       return { data: cached };
     }
 
-    const [provider, targetCrs, zStr, xStr, yStr] = rawPath.split('/');
     const z = Number(zStr);
     const x = Number(xStr);
     const y = Number(yStr);
@@ -58,10 +66,10 @@ export function ensureAlignedTileProtocol() {
     // 无偏移（如海外区域）直接返回单张瓦片，跳过 Canvas 合成
     if (spec.isIdentity) {
       const url = `/api/tile-proxy?provider=${encodeURIComponent(provider)}&z=${z}&x=${x}&y=${y}`;
-      const resp = await fetch(url, { signal: abortController.signal, cache: 'force-cache' });
+      const resp = await fetch(url, { signal: abortController.signal, cache: cacheMode });
       if (!resp.ok) throw new Error(`Tile proxy failed: ${resp.status}`);
       const buf = await resp.arrayBuffer();
-      putCachedAligned(rawPath, buf);
+      putCachedAligned(cacheKey, buf);
       return { data: buf };
     }
 
@@ -78,7 +86,7 @@ export function ensureAlignedTileProtocol() {
       spec.sources.map(async (tile) => {
         const url = `/api/tile-proxy?provider=${encodeURIComponent(provider)}&z=${z}&x=${tile.x}&y=${tile.y}`;
         try {
-          const bmp = await fetchImageBitmap(url, abortController.signal);
+          const bmp = await fetchImageBitmap(url, abortController.signal, cacheMode);
           if (bmp) {
             ctx.drawImage(bmp, tile.drawX * ratio, tile.drawY * ratio, tilePx, tilePx);
             bmp.close();
@@ -92,7 +100,7 @@ export function ensureAlignedTileProtocol() {
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
     if (!blob) throw new Error('Failed to encode aligned tile');
     const buf = await blob.arrayBuffer();
-    putCachedAligned(rawPath, buf);
+    putCachedAligned(cacheKey, buf);
     return { data: buf };
   });
 }

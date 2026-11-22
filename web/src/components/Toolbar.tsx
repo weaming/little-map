@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import {
+  Activity,
   CopyPlus,
   Download,
   Home,
@@ -22,10 +23,12 @@ interface ToolbarProps {
   tool: DrawTool;
   basemap: BasemapId;
   overlay: OverlayId;
+  showTraffic: boolean;
   canEdit: boolean;
   onToolChange: (tool: DrawTool) => void;
   onBasemapChange: (basemap: BasemapId) => void;
   onOverlayChange: (overlay: OverlayId) => void;
+  onToggleTraffic: () => void;
   onShare: () => void;
   onCloneMap: () => void;
   onCreateNew: () => void;
@@ -39,10 +42,12 @@ export function Toolbar({
   tool,
   basemap,
   overlay,
+  showTraffic,
   canEdit,
   onToolChange,
   onBasemapChange,
   onOverlayChange,
+  onToggleTraffic,
   onShare,
   onCloneMap,
   onCreateNew,
@@ -158,6 +163,15 @@ export function Toolbar({
           </option>
         ))}
       </select>
+
+      <button
+        className={`btn ${showTraffic ? 'active' : ''}`}
+        onClick={onToggleTraffic}
+        title="叠加全图实时路况（可与卫星图、地名/路网叠加层同时开启）"
+      >
+        <Activity size={15} />
+        路况
+      </button>
 
       <div className="tool-divider" />
 

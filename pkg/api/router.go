@@ -297,7 +297,11 @@ func handleTileProxy(svc *service.Service) gin.HandlerFunc {
 			writeServiceError(c, err)
 			return
 		}
-		c.Header("Cache-Control", "public, max-age=86400")
+		if provider == "amap-traffic" {
+			c.Header("Cache-Control", "public, max-age=120")
+		} else {
+			c.Header("Cache-Control", "public, max-age=86400")
+		}
 		c.Data(http.StatusOK, contentType, data)
 	}
 }

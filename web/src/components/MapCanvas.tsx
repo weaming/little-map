@@ -37,6 +37,7 @@ import type {
 interface MapCanvasProps {
   basemap: BasemapId;
   overlay: OverlayId;
+  showTraffic: boolean;
   canEdit: boolean;
   initialCenter: [number, number];
   initialZoom: number;
@@ -163,6 +164,56 @@ function syncOverlayLayer(map: maplibregl.Map, basemap: BasemapId, overlay: Over
       tiles,
       tileSize: 256,
       maxzoom: ovCfg.maxzoom,
+    });
+  }
+
+  const beforeId = map.getLayer('features-fill') ? 'features-fill' : undefined;
+  map.addLayer(
+    {
+      id: targetLayer,
+      type: 'raster',
+      source: srcId,
+    },
+    beforeId,
+  );
+}
+
+const TRAFFIC_TILE_LAYER_PREFIX = 'traffic-tile-layer-';
+const TRAFFIC_TILE_SOURCE_PREFIX = 'traffic-tile-src-';
+
+// 独立全图实时路况层，可与底图及地名/路网叠加层任意组合显示，位于标注层之下。
+function syncTrafficTileLayer(map: maplibregl.Map, basemap: BasemapId, showTraffic: boolean) {
+  const style = map.getStyle();
+  if (!style) return;
+
+  const baseCfg = BASEMAPS[basemap] ?? BASEMAPS['amap-vec'];
+  const targetLayer = showTraffic ? `${TRAFFIC_TILE_LAYER_PREFIX}${baseCfg.crs}` : '';
+
+  for (const layer of style.layers ?? []) {
+    if (layer.id.startsWith(TRAFFIC_TILE_LAYER_PREFIX) && layer.id !== targetLayer) {
+      map.setLayoutProperty(layer.id, 'visibility', 'none');
+    }
+  }
+
+  if (!showTraffic) return;
+
+  if (map.getLayer(targetLayer)) {
+    map.setLayoutProperty(targetLayer, 'visibility', 'visible');
+    return;
+  }
+
+  const srcId = `${TRAFFIC_TILE_SOURCE_PREFIX}${baseCfg.crs}`;
+  if (!map.getSource(srcId)) {
+    const tiles =
+      baseCfg.crs === 'gcj02'
+        ? ['/api/tile-proxy?provider=amap-traffic&z={z}&x={x}&y={y}']
+        : [`aligned-tile://amap-traffic/${baseCfg.crs}/{z}/{x}/{y}`];
+
+    map.addSource(srcId, {
+      type: 'raster',
+      tiles,
+      tileSize: 256,
+      maxzoom: 17,
     });
   }
 
@@ -382,6 +433,7 @@ function createMeasureMarker(
 export function MapCanvas({
   basemap,
   overlay,
+  showTraffic,
   canEdit,
   initialCenter,
   initialZoom,
@@ -455,6 +507,7 @@ export function MapCanvas({
   const latestRef = useRef({
     basemap,
     overlay,
+    showTraffic,
     features,
     selectedFeatureId,
     editingLineFeatureId,
@@ -481,6 +534,7 @@ export function MapCanvas({
   latestRef.current = {
     basemap,
     overlay,
+    showTraffic,
     features,
     selectedFeatureId,
     editingLineFeatureId,
@@ -802,6 +856,7 @@ export function MapCanvas({
     map.on('style.load', () => {
       ensureVectorLayers(map);
       syncOverlayLayer(map, latestRef.current.basemap, latestRef.current.overlay);
+      syncTrafficTileLayer(map, latestRef.current.basemap, latestRef.current.showTraffic);
       updateViewportBounds();
     });
 
@@ -1412,6 +1467,7 @@ export function MapCanvas({
       pitch: curPitch,
     });
     syncOverlayLayer(map, basemap, latestRef.current.overlay);
+    syncTrafficTileLayer(map, basemap, latestRef.current.showTraffic);
   }, [basemap]);
 
   // 切换路网叠加层（原地增删图层，不影响底图与视角）
@@ -1420,6 +1476,13 @@ export function MapCanvas({
     if (!map) return;
     syncOverlayLayer(map, latestRef.current.basemap, overlay);
   }, [overlay]);
+
+  // 独立开关全图实时路况层（可与卫星底图+地名/路网叠加层同时开启）
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    syncTrafficTileLayer(map, latestRef.current.basemap, showTraffic);
+  }, [showTraffic]);
 
   // 同步线/面 GeoJSON 数据与点 Marker
   useEffect(() => {

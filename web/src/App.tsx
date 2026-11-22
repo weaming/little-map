@@ -153,6 +153,7 @@ export function App() {
   const [canEdit, setCanEdit] = useState(false);
   const [basemap, setBasemap] = useState<BasemapId>('amap-vec');
   const [overlay, setOverlay] = useState<OverlayId>(() => (initialParams.mapId ? loadSavedOverlay(initialParams.mapId) : 'none'));
+  const [showTraffic, setShowTraffic] = useState(false);
   const [tool, setTool] = useState<DrawTool>('select');
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
   const [showShare, setShowShare] = useState(false);
@@ -865,6 +866,7 @@ export function App() {
             key={mapMeta.id}
             basemap={basemap}
             overlay={overlay}
+            showTraffic={showTraffic}
             canEdit={canEdit}
             initialCenter={savedView ? [savedView.lng, savedView.lat] : [mapMeta.center_lng, mapMeta.center_lat]}
             initialZoom={savedView ? savedView.zoom : mapMeta.zoom}
@@ -904,6 +906,7 @@ export function App() {
             tool={tool}
             basemap={basemap}
             overlay={overlay}
+            showTraffic={showTraffic}
             canEdit={canEdit}
             onToolChange={setTool}
             onBasemapChange={handleBasemapChange}
@@ -911,6 +914,7 @@ export function App() {
               setOverlay(next);
               saveOverlay(mapMeta.id, next);
             }}
+            onToggleTraffic={() => setShowTraffic((v) => !v)}
             onShare={() => setShowShare(true)}
             onCloneMap={() => void handleCloneMap()}
             onCreateNew={() => void handleCreateNewMap()}
