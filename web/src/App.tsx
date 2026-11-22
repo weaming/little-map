@@ -19,7 +19,14 @@ import { MapCanvas } from './components/MapCanvas';
 import { ShareModal } from './components/ShareModal';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
-import { geometryBounds, geometryCenter, getCurrentPositionWgs84, type WgsBounds } from './map/geo';
+import {
+  featuresViewport,
+  geometryBounds,
+  geometryCenter,
+  getCurrentPositionWgs84,
+  pickDominantColor,
+  type WgsBounds,
+} from './map/geo';
 import type {
   AdminMapSummary,
   BasemapId,
@@ -222,21 +229,29 @@ export function App() {
           if (force) {
             setBasemap(res.snapshot.map.basemap || 'amap-vec');
             const hasSavedView = loadSavedView(res.snapshot.map.id) !== null;
-            const isDefaultCenter =
-              Math.abs(res.snapshot.map.center_lng - 116.3974) < 1e-4 &&
-              Math.abs(res.snapshot.map.center_lat - 39.9093) < 1e-4;
-            if (
-              !hasSavedView &&
-              res.snapshot.features.length === 0 &&
-              isDefaultCenter &&
-              autoLocatedMapRef.current !== res.snapshot.map.id
-            ) {
+            if (!hasSavedView && autoLocatedMapRef.current !== res.snapshot.map.id) {
               autoLocatedMapRef.current = res.snapshot.map.id;
-              void getCurrentPositionWgs84(2500).then((pos) => {
-                if (!pos) return;
-                setUserLocation(pos);
-                setFlyTarget({ lng: pos[0], lat: pos[1], zoom: 13, seq: Date.now() });
-              });
+              const visibleVp = featuresViewport(res.snapshot.features);
+              if (visibleVp) {
+                setFlyTarget({
+                  lng: visibleVp.center[0],
+                  lat: visibleVp.center[1],
+                  zoom: visibleVp.bounds ? undefined : 14,
+                  bounds: visibleVp.bounds,
+                  seq: Date.now(),
+                });
+              } else {
+                const isDefaultCenter =
+                  Math.abs(res.snapshot.map.center_lng - 116.3974) < 1e-4 &&
+                  Math.abs(res.snapshot.map.center_lat - 39.9093) < 1e-4;
+                if (isDefaultCenter) {
+                  void getCurrentPositionWgs84(2500).then((pos) => {
+                    if (!pos) return;
+                    setUserLocation(pos);
+                    setFlyTarget({ lng: pos[0], lat: pos[1], zoom: 13, seq: Date.now() });
+                  });
+                }
+              }
             }
           }
           saveRecentMap({
@@ -382,7 +397,7 @@ export function App() {
         {
           title,
           description,
-          color: '#2563eb',
+          color: pickDominantColor(features, geometry.type, '#2563eb'),
           geometry,
           visible: true,
         },
@@ -481,7 +496,7 @@ export function App() {
           title: place.name,
           description: place.address,
           category: place.category ?? '',
-          color: useBoundary ? '#2563eb' : '#dc2626',
+          color: pickDominantColor(features, geometry.type, useBoundary ? '#2563eb' : '#dc2626'),
           geometry,
           visible: true,
         },

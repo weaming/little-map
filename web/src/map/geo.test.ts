@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import {
   computeAlignedTileSpec,
+  featuresViewport,
   formatArea,
   formatDistance,
   gcj02ToWgs84,
   isViewportInsidePolygon,
   lineLengthMeters,
   lngLatToWorldPx,
+  pickDominantColor,
   polygonAreaSqMeters,
   wgs84ToGcj02,
   worldPxToLngLat,
@@ -107,5 +109,36 @@ describe('geo utilities', () => {
         bigSquare,
       ),
     ).toBe(false);
+  });
+
+  test('featuresViewport ignores hidden features and fits visible ones', () => {
+    const vp = featuresViewport([
+      { visible: false, geometry: { type: 'Point', coordinates: [100, 20] } },
+      { visible: true, geometry: { type: 'Point', coordinates: [116.3, 39.9] } },
+      { visible: true, geometry: { type: 'Point', coordinates: [116.5, 40.1] } },
+    ]);
+    expect(vp).not.toBeNull();
+    expect(vp?.bounds).toEqual([
+      [116.3, 39.9],
+      [116.5, 40.1],
+    ]);
+
+    const single = featuresViewport([
+      { visible: true, geometry: { type: 'Point', coordinates: [116.3, 39.9] } },
+    ]);
+    expect(single?.center).toEqual([116.3, 39.9]);
+    expect(single?.bounds).toBeUndefined();
+  });
+
+  test('pickDominantColor picks most frequent color within same geometry type', () => {
+    const sample = [
+      { color: '#dc2626', geometry: { type: 'Point' as const, coordinates: [116.3, 39.9] } },
+      { color: '#16a34a', geometry: { type: 'Point' as const, coordinates: [116.4, 39.9] } },
+      { color: '#dc2626', geometry: { type: 'Point' as const, coordinates: [116.5, 39.9] } },
+      { color: '#7c3aed', geometry: { type: 'LineString' as const, coordinates: [[116.3, 39.9], [116.4, 40.0]] } },
+    ];
+    expect(pickDominantColor(sample, 'Point', '#2563eb')).toBe('#dc2626');
+    expect(pickDominantColor(sample, 'LineString', '#2563eb')).toBe('#7c3aed');
+    expect(pickDominantColor(sample, 'Polygon', '#2563eb')).toBe('#2563eb');
   });
 });

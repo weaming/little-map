@@ -1,4 +1,4 @@
-import type { BasemapId, GeoGeometry, OverlayId } from '../types/map';
+import type { BasemapId, GeoGeometry, MapFeature, OverlayId } from '../types/map';
 
 const EARTH_RADIUS_M = 6371008.8;
 const GCJ_AXIS = 6378245.0;
@@ -294,6 +294,79 @@ export function geometryBounds(geom: GeoGeometry): WgsBounds | null {
     [minLng, minLat],
     [maxLng, maxLat],
   ];
+}
+
+// 计算所有可见要素的汇总视野（单点返回中心，多点/线/面返回外接包围盒）。
+export function featuresViewport(
+  features: Pick<MapFeature, 'visible' | 'geometry'>[],
+): { center: [number, number]; bounds?: WgsBounds } | null {
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  let count = 0;
+
+  const pushPt = (lng: number, lat: number) => {
+    if (lng < minLng) minLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lng > maxLng) maxLng = lng;
+    if (lat > maxLat) maxLat = lat;
+    count++;
+  };
+
+  for (const f of features) {
+    if (!f.visible) continue;
+    if (f.geometry.type === 'Point') {
+      const [lng, lat] = f.geometry.coordinates as number[];
+      pushPt(lng, lat);
+    } else if (f.geometry.type === 'LineString') {
+      for (const [lng, lat] of f.geometry.coordinates as number[][]) {
+        pushPt(lng, lat);
+      }
+    } else if (f.geometry.type === 'Polygon') {
+      const ring = (f.geometry.coordinates as number[][][])[0] ?? [];
+      for (const [lng, lat] of ring) {
+        pushPt(lng, lat);
+      }
+    }
+  }
+
+  if (count === 0 || !Number.isFinite(minLng)) return null;
+  const center: [number, number] = [(minLng + maxLng) / 2, (minLat + maxLat) / 2];
+  if (Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6) {
+    return { center };
+  }
+  return {
+    center,
+    bounds: [
+      [minLng, minLat],
+      [maxLng, maxLat],
+    ],
+  };
+}
+
+// 统计当前地图同几何类型标注中出现次数最多的颜色；无同类时回退 fallback。
+export function pickDominantColor(
+  features: Pick<MapFeature, 'color' | 'geometry'>[],
+  geomType: GeoGeometry['type'],
+  fallback = '#2563eb',
+): string {
+  const counts = new Map<string, number>();
+  let bestColor = fallback;
+  let bestCount = 0;
+
+  for (const f of features) {
+    if (f.geometry.type !== geomType) continue;
+    const c = (f.color || '').trim();
+    if (!c) continue;
+    const next = (counts.get(c) ?? 0) + 1;
+    counts.set(c, next);
+    if (next > bestCount) {
+      bestCount = next;
+      bestColor = c;
+    }
+  }
+  return bestColor;
 }
 
 // 射线法判断点是否在多边形环内部。
