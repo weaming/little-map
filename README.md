@@ -19,5 +19,7 @@
 | `--base-url` | `BASE_URL` | 空 | MCP 返回分享链接的公开域名 |
 | `--amap-key` | `AMAP_KEY` | 空 | 高德 Web 服务 Key（POI 搜索） |
 | `--google-key` | `GOOGLE_MAPS_KEY` | 空 | Google Places Key（POI 搜索） |
+| `--admin-key` | `ADMIN_KEY` | 空 | 管理员口令（启用首页全部地图列表与删除） |
 | `--proxy` | `LITTLE_MAP_PROXY` | 跟随系统环境 | 出站 HTTP 代理，填 `none` 禁用 |
 | `--basemap` | `DEFAULT_BASEMAP` | `amap-vec` | 默认底图 ID |
+| `--list-maps` | — | `false` | 在终端列出全部地图及分享/编辑链接后退出 |

@@ -54,6 +54,18 @@ export interface ServerCapabilities {
   search_providers: string[];
   has_amap_key: boolean;
   has_google_key: boolean;
+  has_admin_key: boolean;
+}
+
+export interface AdminMapSummary {
+  id: string;
+  edit_token: string;
+  title: string;
+  description: string;
+  feature_count: number;
+  revision: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export type BasemapId = 'amap-vec' | 'amap-sat' | 'google-vec' | 'google-sat' | 'osm';

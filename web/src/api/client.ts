@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type {
+  AdminMapSummary,
   BasemapId,
   GeoGeometry,
   MapFeature,
@@ -133,6 +134,19 @@ export async function reverseGeocode(lng: number, lat: number): Promise<PlaceRes
     timeout: 3000,
   });
   return data.result ?? null;
+}
+
+export async function fetchAdminMaps(adminKey: string): Promise<AdminMapSummary[]> {
+  const { data } = await http.get<{ maps: AdminMapSummary[] }>('/admin/maps', {
+    headers: { 'X-Admin-Key': adminKey },
+  });
+  return data.maps;
+}
+
+export async function deleteAdminMap(adminKey: string, mapId: string): Promise<void> {
+  await http.delete(`/admin/maps/${encodeURIComponent(mapId)}`, {
+    headers: { 'X-Admin-Key': adminKey },
+  });
 }
 
 export function getExportUrl(mapId: string): string {

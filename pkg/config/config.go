@@ -18,9 +18,11 @@ type Config struct {
 	BaseURL        string
 	AmapKey        string
 	GoogleMapsKey  string
+	AdminKey       string
 	HTTPProxy      string
 	DefaultBasemap string
 	TZ             string
+	ListMaps       bool
 }
 
 // Load 从环境变量与命令行参数加载配置，命令行参数优先级高于环境变量。
@@ -33,6 +35,7 @@ func Load() *Config {
 		BaseURL:        strings.TrimRight(os.Getenv("BASE_URL"), "/"),
 		AmapKey:        strings.TrimSpace(os.Getenv("AMAP_KEY")),
 		GoogleMapsKey:  strings.TrimSpace(os.Getenv("GOOGLE_MAPS_KEY")),
+		AdminKey:       strings.TrimSpace(os.Getenv("ADMIN_KEY")),
 		HTTPProxy:      strings.TrimSpace(os.Getenv("LITTLE_MAP_PROXY")),
 		DefaultBasemap: envOrDefault("DEFAULT_BASEMAP", "amap-vec"),
 		TZ:             envOrDefault("TZ", "Asia/Hong_Kong"),
@@ -44,8 +47,10 @@ func Load() *Config {
 	flag.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "Public base URL for share links")
 	flag.StringVar(&cfg.AmapKey, "amap-key", cfg.AmapKey, "Amap Web Service API key for POI search")
 	flag.StringVar(&cfg.GoogleMapsKey, "google-key", cfg.GoogleMapsKey, "Google Maps API key for POI search")
+	flag.StringVar(&cfg.AdminKey, "admin-key", cfg.AdminKey, "Admin key for listing/managing all maps")
 	flag.StringVar(&cfg.HTTPProxy, "proxy", cfg.HTTPProxy, "Outbound HTTP proxy URL ('none' to disable)")
 	flag.StringVar(&cfg.DefaultBasemap, "basemap", cfg.DefaultBasemap, "Default basemap id")
+	flag.BoolVar(&cfg.ListMaps, "list-maps", false, "Print all stored maps with share/edit URLs and exit")
 	flag.Parse()
 
 	cfg.DataDir = expandHome(cfg.DataDir)

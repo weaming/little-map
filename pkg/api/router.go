@@ -38,6 +38,8 @@ func NewRouter(svc *service.Service, mcpHandler http.Handler, webFS fs.FS) *gin.
 		group.GET("/search", handleSearch(svc))
 		group.GET("/regeo", handleReverseGeocode(svc))
 		group.GET("/tile-proxy", handleTileProxy(svc))
+		group.GET("/admin/maps", handleAdminListMaps(svc))
+		group.DELETE("/admin/maps/:id", handleAdminDeleteMap(svc))
 	}
 
 	if mcpHandler != nil {
@@ -83,7 +85,7 @@ func handleGetMap(svc *service.Service) gin.HandlerFunc {
 		etag := fmt.Sprintf(`"rev-%d-%t"`, snap.Map.Revision, snap.CanEdit)
 		c.Header("ETag", etag)
 		c.Header("Cache-Control", "no-cache")
-		if strings.TrimSpace(c.GetHeader("If-None-Match")) == etag {
+		if etagMatches(c.GetHeader("If-None-Match"), etag) {
 			c.Status(http.StatusNotModified)
 			return
 		}
@@ -244,11 +246,55 @@ func handleTileProxy(svc *service.Service) gin.HandlerFunc {
 	}
 }
 
+func handleAdminListMaps(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !svc.VerifyAdminKey(strings.TrimSpace(c.GetHeader("X-Admin-Key"))) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "invalid or missing admin key"})
+			return
+		}
+		list, err := svc.ListMaps(c.Request.Context())
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"maps": list})
+	}
+}
+
+func handleAdminDeleteMap(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !svc.VerifyAdminKey(strings.TrimSpace(c.GetHeader("X-Admin-Key"))) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "invalid or missing admin key"})
+			return
+		}
+		if err := svc.DeleteMap(c.Request.Context(), c.Param("id")); err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"deleted": true})
+	}
+}
+
 func extractEditToken(c *gin.Context) string {
 	if token := strings.TrimSpace(c.GetHeader("X-Edit-Token")); token != "" {
 		return token
 	}
 	return strings.TrimSpace(c.Query("t"))
+}
+
+// etagMatches 兼容反向代理开启压缩后将强 ETag 改写为弱 ETag（W/"..."）的场景。
+func etagMatches(ifNoneMatch, etag string) bool {
+	if ifNoneMatch == "" {
+		return false
+	}
+	for _, part := range strings.Split(ifNoneMatch, ",") {
+		candidate := strings.TrimSpace(part)
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func writeServiceError(c *gin.Context, err error) {

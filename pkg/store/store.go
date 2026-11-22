@@ -63,6 +63,18 @@ type MapPatch struct {
 	Basemap     *string
 }
 
+// MapSummary 表示管理视角下的地图概要（含编辑令牌与标注数量）。
+type MapSummary struct {
+	ID           string `json:"id"`
+	EditToken    string `json:"edit_token"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	FeatureCount int    `json:"feature_count"`
+	Revision     int64  `json:"revision"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
 // Store 封装 SQLite 数据持久化与事务乐观锁。
 type Store struct {
 	db  *sql.DB
@@ -376,6 +388,51 @@ func (s *Store) DeleteFeatures(ctx context.Context, mapID, editToken string, bas
 		return 0, 0, fmt.Errorf("commit tx: %w", err)
 	}
 	return newRev, deleted, nil
+}
+
+// ListMaps 按更新时间倒序列出数据库中的全部地图概要。
+func (s *Store) ListMaps(ctx context.Context) ([]MapSummary, error) {
+	const q = `
+SELECT m.id, m.edit_token, m.title, m.description, COUNT(f.id) AS feature_count, m.revision, m.created_at, m.updated_at
+FROM maps m
+LEFT JOIN features f ON f.map_id = m.id
+GROUP BY m.id
+ORDER BY m.updated_at DESC
+`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list maps: %w", err)
+	}
+	defer rows.Close()
+
+	list := make([]MapSummary, 0)
+	for rows.Next() {
+		var item MapSummary
+		if err := rows.Scan(
+			&item.ID, &item.EditToken, &item.Title, &item.Description,
+			&item.FeatureCount, &item.Revision, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan map summary: %w", err)
+		}
+		list = append(list, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate map summaries: %w", err)
+	}
+	return list, nil
+}
+
+// DeleteMap 删除指定地图及其全部标注（外键级联删除）。
+func (s *Store) DeleteMap(ctx context.Context, mapID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM maps WHERE id = ?`, mapID)
+	if err != nil {
+		return fmt.Errorf("delete map: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func lockAndVerifyMapTx(ctx context.Context, tx *sql.Tx, mapID, editToken string, baseRevision int64) (*Map, error) {

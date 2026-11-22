@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import {
   Download,
+  Home,
   LocateFixed,
   MapPin,
   MousePointer2,
@@ -28,6 +29,7 @@ interface ToolbarProps {
   onExport: () => void;
   onImportGeoJSON: (file: File) => void;
   onLocateMe: () => void;
+  onGoHome: () => void;
 }
 
 export function Toolbar({
@@ -43,11 +45,18 @@ export function Toolbar({
   onExport,
   onImportGeoJSON,
   onLocateMe,
+  onGoHome,
 }: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <div className="floating-toolbar">
+      <button className="btn" onClick={onGoHome} title="返回首页与地图列表">
+        <Home size={15} />
+      </button>
+
+      <div className="tool-divider" />
+
       <button
         className={`btn ${tool === 'select' ? 'active' : ''}`}
         onClick={() => onToolChange('select')}

@@ -26,6 +26,7 @@ func setupTestRouter(t *testing.T) http.Handler {
 	cfg := &config.Config{
 		DefaultBasemap: "amap-vec",
 		BaseURL:        "https://map.example.com",
+		AdminKey:       "secret-admin-key",
 	}
 	svc := service.New(st, cfg)
 	mcpHandler := mcpserver.NewHandler(svc, cfg)
@@ -76,6 +77,15 @@ func TestMapCRUDOptimisticLockAndETag(t *testing.T) {
 	router.ServeHTTP(notModResp, notModReq)
 	if notModResp.Code != http.StatusNotModified {
 		t.Fatalf("expected 304 Not Modified, got %d", notModResp.Code)
+	}
+
+	// 反代压缩后弱 ETag（W/"..."）同样命中 304
+	weakNotModReq := httptest.NewRequest(http.MethodGet, "/api/maps/"+created.Map.ID, nil)
+	weakNotModReq.Header.Set("If-None-Match", "W/"+etag)
+	weakNotModResp := httptest.NewRecorder()
+	router.ServeHTTP(weakNotModResp, weakNotModReq)
+	if weakNotModResp.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified for weak ETag, got %d", weakNotModResp.Code)
 	}
 
 	// 3. 无 edit_token 写入被拒绝
@@ -140,5 +150,50 @@ func TestMCPStreamableHTTP(t *testing.T) {
 	}
 	if !bytes.Contains(callResp.Body.Bytes(), []byte("edit_token")) {
 		t.Fatalf("expected edit_token in create_map output: %s", callResp.Body.String())
+	}
+}
+
+func TestAdminListAndDeleteMaps(t *testing.T) {
+	router := setupTestRouter(t)
+
+	// 创建一张地图
+	createReq := httptest.NewRequest(http.MethodPost, "/api/maps", bytes.NewBufferString(`{"title":"管理测试"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create failed: %d", createResp.Code)
+	}
+	var created struct {
+		Map struct {
+			ID string `json:"id"`
+		} `json:"map"`
+	}
+	_ = json.Unmarshal(createResp.Body.Bytes(), &created)
+
+	// 无口令被拒绝
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/admin/maps", nil)
+	unauthResp := httptest.NewRecorder()
+	router.ServeHTTP(unauthResp, unauthReq)
+	if unauthResp.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without admin key, got %d", unauthResp.Code)
+	}
+
+	// 正确口令可列出地图
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/maps", nil)
+	listReq.Header.Set("X-Admin-Key", "secret-admin-key")
+	listResp := httptest.NewRecorder()
+	router.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK || !bytes.Contains(listResp.Body.Bytes(), []byte(created.Map.ID)) {
+		t.Fatalf("expected map id in admin list: code=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+
+	// 正确口令可删除地图
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/admin/maps/"+created.Map.ID, nil)
+	delReq.Header.Set("X-Admin-Key", "secret-admin-key")
+	delResp := httptest.NewRecorder()
+	router.ServeHTTP(delResp, delReq)
+	if delResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 on admin delete, got %d", delResp.Code)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -44,6 +45,11 @@ func main() {
 	}
 	defer st.Close()
 
+	if cfg.ListMaps {
+		printStoredMaps(st, cfg.BaseURL)
+		return
+	}
+
 	svc := service.New(st, cfg)
 	mcpHandler := mcpserver.NewHandler(svc, cfg)
 
@@ -77,5 +83,22 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown failed", "err", err)
+	}
+}
+
+func printStoredMaps(st *store.Store, baseURL string) {
+	maps, err := st.ListMaps(context.Background())
+	if err != nil {
+		slog.Error("list maps failed", "err", err)
+		os.Exit(1)
+	}
+	if len(maps) == 0 {
+		fmt.Println("(no maps found)")
+		return
+	}
+	for _, m := range maps {
+		fmt.Printf("[%s] %s (%d features, updated %s)\n", m.ID, m.Title, m.FeatureCount, m.UpdatedAt)
+		fmt.Printf("  view: %s/?m=%s\n", baseURL, m.ID)
+		fmt.Printf("  edit: %s/?m=%s&t=%s\n", baseURL, m.ID, m.EditToken)
 	}
 }

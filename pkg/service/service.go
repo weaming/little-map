@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -262,7 +263,26 @@ func (s *Service) Capabilities() map[string]any {
 		"search_providers": providers,
 		"has_amap_key":     s.cfg.AmapKey != "",
 		"has_google_key":   s.cfg.GoogleMapsKey != "",
+		"has_admin_key":    s.cfg.AdminKey != "",
 	}
+}
+
+// VerifyAdminKey 使用常量时间比较校验管理员口令。
+func (s *Service) VerifyAdminKey(key string) bool {
+	if s.cfg.AdminKey == "" || key == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(s.cfg.AdminKey), []byte(key)) == 1
+}
+
+// ListMaps 返回数据库中所有地图概要（仅限管理员或 CLI 使用）。
+func (s *Service) ListMaps(ctx context.Context) ([]store.MapSummary, error) {
+	return s.store.ListMaps(ctx)
+}
+
+// DeleteMap 删除整张地图（仅限管理员使用）。
+func (s *Service) DeleteMap(ctx context.Context, mapID string) error {
+	return s.store.DeleteMap(ctx, mapID)
 }
 
 func randomToken(byteLen int) (string, error) {

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createMap,
+  deleteAdminMap,
   deleteFeatures,
   extractErrorMessage,
+  fetchAdminMaps,
   fetchCapabilities,
   fetchMap,
   getExportUrl,
@@ -18,6 +20,7 @@ import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import { geometryBounds, geometryCenter, getCurrentPositionWgs84, type WgsBounds } from './map/geo';
 import type {
+  AdminMapSummary,
   BasemapId,
   DrawTool,
   GeoGeometry,
@@ -37,6 +40,7 @@ interface RecentMapItem {
 const RECENT_STORAGE_KEY = 'little_map_recent_v1';
 const VIEW_STORAGE_PREFIX = 'little_map_view_v1:';
 const OVERLAY_STORAGE_PREFIX = 'little_map_overlay_v1:';
+const ADMIN_KEY_STORAGE = 'little_map_admin_key_v1';
 
 function loadSavedOverlay(mapId: string): OverlayId {
   try {
@@ -111,7 +115,7 @@ function loadRecentMaps(): RecentMapItem[] {
 function saveRecentMap(item: RecentMapItem) {
   const list = loadRecentMaps().filter((x) => x.id !== item.id);
   list.unshift(item);
-  localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(list.slice(0, 8)));
+  localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(list.slice(0, 50)));
 }
 
 export function App() {
@@ -123,7 +127,14 @@ export function App() {
     search_providers: ['osm'],
     has_amap_key: false,
     has_google_key: false,
+    has_admin_key: false,
   });
+
+  const [adminKey, setAdminKey] = useState(() => localStorage.getItem(ADMIN_KEY_STORAGE) ?? '');
+  const [adminInput, setAdminInput] = useState('');
+  const [adminMaps, setAdminMaps] = useState<AdminMapSummary[] | null>(null);
+  const [adminError, setAdminError] = useState('');
+  const [adminLoading, setAdminLoading] = useState(false);
 
   const [mapMeta, setMapMeta] = useState<MapMeta | null>(null);
   const [features, setFeatures] = useState<MapFeature[]>([]);
@@ -159,6 +170,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    document.title = mapMeta?.title ? `${mapMeta.title} - Little Map` : 'Little Map';
+  }, [mapMeta?.title]);
+
+  useEffect(() => {
     fetchCapabilities()
       .then((cap) => {
         setCapabilities(cap);
@@ -166,6 +181,30 @@ export function App() {
       })
       .catch(() => {});
   }, []);
+
+  const loadAdminList = useCallback(async (key: string) => {
+    const trimmed = key.trim();
+    if (!trimmed) return;
+    setAdminLoading(true);
+    setAdminError('');
+    try {
+      const list = await fetchAdminMaps(trimmed);
+      localStorage.setItem(ADMIN_KEY_STORAGE, trimmed);
+      setAdminKey(trimmed);
+      setAdminMaps(list);
+    } catch (err) {
+      setAdminMaps(null);
+      setAdminError(extractErrorMessage(err).message);
+    } finally {
+      setAdminLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mapId && capabilities.has_admin_key && adminKey && adminMaps === null) {
+      void loadAdminList(adminKey);
+    }
+  }, [mapId, capabilities.has_admin_key, adminKey, adminMaps, loadAdminList]);
 
   const syncMap = useCallback(
     async (force = false) => {
@@ -526,8 +565,8 @@ export function App() {
 
           {recents.length > 0 && (
             <div style={{ marginTop: 22 }}>
-              <div className="field-label">最近访问</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className="field-label">最近访问（本浏览器）</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
                 {recents.map((item) => (
                   <button
                     key={item.id}
@@ -545,6 +584,99 @@ export function App() {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {capabilities.has_admin_key && (
+            <div style={{ marginTop: 22, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div className="field-label" style={{ marginBottom: 0 }}>
+                  全部地图管理（管理员）
+                </div>
+                {adminMaps !== null && (
+                  <button
+                    className="btn"
+                    style={{ padding: '2px 6px', fontSize: 12 }}
+                    onClick={() => {
+                      localStorage.removeItem(ADMIN_KEY_STORAGE);
+                      setAdminKey('');
+                      setAdminInput('');
+                      setAdminMaps(null);
+                    }}
+                  >
+                    退出管理
+                  </button>
+                )}
+              </div>
+
+              {adminMaps === null ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void loadAdminList(adminInput);
+                  }}
+                  style={{ display: 'flex', gap: 8 }}
+                >
+                  <input
+                    type="password"
+                    className="text-input"
+                    placeholder="输入管理员口令查看全部地图"
+                    value={adminInput}
+                    onChange={(e) => setAdminInput(e.target.value)}
+                  />
+                  <button type="submit" className="btn outline" disabled={adminLoading}>
+                    {adminLoading ? '验证中...' : '解锁'}
+                  </button>
+                </form>
+              ) : adminMaps.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#64748b' }}>服务端暂无地图</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 240, overflowY: 'auto' }}>
+                  {adminMaps.map((m) => (
+                    <div
+                      key={m.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '6px 8px',
+                        border: '1px solid var(--border)',
+                        borderRadius: 8,
+                      }}
+                    >
+                      <div
+                        style={{ minWidth: 0, flex: 1, cursor: 'pointer' }}
+                        onClick={() => {
+                          window.location.href = `/?m=${encodeURIComponent(m.id)}&t=${encodeURIComponent(m.edit_token)}`;
+                        }}
+                      >
+                        <div className="feature-title">{m.title}</div>
+                        <div className="feature-sub">
+                          {m.feature_count} 条标注 · {m.updated_at.slice(0, 16).replace('T', ' ')}
+                        </div>
+                      </div>
+                      <button
+                        className="btn danger"
+                        style={{ padding: '3px 7px', fontSize: 12 }}
+                        onClick={async () => {
+                          if (!window.confirm(`确定永久删除地图「${m.title}」？`)) return;
+                          try {
+                            await deleteAdminMap(adminKey, m.id);
+                            setAdminMaps((prev) => (prev ? prev.filter((x) => x.id !== m.id) : prev));
+                          } catch (err) {
+                            setAdminError(extractErrorMessage(err).message);
+                          }
+                        }}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {adminError && <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6 }}>{adminError}</div>}
             </div>
           )}
         </div>
@@ -594,6 +726,14 @@ export function App() {
             }}
             onImportGeoJSON={handleImportGeoJSON}
             onLocateMe={() => void handleLocateMe()}
+            onGoHome={() => {
+              window.history.pushState({}, '', '/');
+              setMapId('');
+              setEditToken('');
+              setMapMeta(null);
+              setFeatures([]);
+              setSelectedFeatureId(null);
+            }}
           />
 
           <Sidebar
