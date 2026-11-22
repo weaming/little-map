@@ -12,6 +12,7 @@ import type {
   RouteResult,
   RouteSegmentMode,
   ServerCapabilities,
+  TrafficSegment,
 } from '../types/map';
 
 const http = axios.create({
@@ -153,13 +154,62 @@ export async function planRoute(
   waypoints: [number, number][],
   provider: RouteProvider = 'auto',
   segmentModes?: RouteSegmentMode[],
+  avoidPoints?: [number, number][],
+  avoidSegments?: [number, number][][],
 ): Promise<RouteResult> {
   const { data } = await http.post<RouteResult>('/route', {
     mode,
     waypoints,
     provider,
     ...(segmentModes && segmentModes.length > 0 ? { segment_modes: segmentModes } : {}),
+    ...(avoidPoints && avoidPoints.length > 0 ? { avoid_points: avoidPoints } : {}),
+    ...(avoidSegments && avoidSegments.length > 0 ? { avoid_segments: avoidSegments } : {}),
   });
+  return data;
+}
+
+export interface BypassAnchor {
+  name: string;
+  lng: number;
+  lat: number;
+}
+
+export interface BypassOption {
+  id: string;
+  label: string;
+  summary: string;
+  kind: 'official' | 'both' | 'delay_entry' | 'early_exit';
+  before?: BypassAnchor;
+  after?: BypassAnchor;
+  segment_modes: RouteSegmentMode[];
+  distance_meters: number;
+  duration_seconds: number;
+  delta_seconds: number;
+  delta_meters: number;
+}
+
+export interface BypassResult {
+  recommended_id: string;
+  summary: string;
+  merged_jam_pts: number;
+  options: BypassOption[];
+}
+
+export interface BypassRequest {
+  route_coords: [number, number][];
+  traffic_segments?: TrafficSegment[];
+  clicked_segment_idx?: number;
+  avoid_segment: [number, number][];
+  start_point?: [number, number];
+  end_point?: [number, number];
+  orig_mode?: RouteSegmentMode;
+  orig_duration_seconds?: number;
+  orig_distance_meters?: number;
+  provider?: RouteProvider;
+}
+
+export async function findHighwayBypassAnchors(req: BypassRequest): Promise<BypassResult> {
+  const { data } = await http.post<BypassResult>('/route/bypass', req, { timeout: 25000 });
   return data;
 }
 

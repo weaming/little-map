@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { marked } from 'marked';
-import { ArrowLeftRight, Pencil, Save, Spline, Trash2, X } from 'lucide-react';
+import { Activity, ArrowLeftRight, Eye, Pencil, Save, Spline, Trash2, X } from 'lucide-react';
 import { formatArea, formatDistance, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
 import type { MapFeature } from '../types/map';
 
@@ -9,10 +9,14 @@ const SWATCH_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#
 interface FeatureInspectorProps {
   feature: MapFeature;
   canEdit: boolean;
+  hasAmapKey: boolean;
   isEditingNodes: boolean;
+  trafficActive: boolean;
+  trafficLoading: boolean;
   onSave: (updated: MapFeature) => void;
   onDelete: (featureId: string) => void;
   onToggleEditNodes: (featureId: string) => void;
+  onToggleTraffic: (feature: MapFeature) => void;
   onClose: () => void;
 }
 
@@ -22,17 +26,23 @@ function isMobileViewport(): boolean {
 
 function renderSafeMarkdown(raw: string): string {
   if (!raw.trim()) return '';
-  const html = marked.parse(raw, { async: false }) as string;
-  return html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+  const html = marked.parse(raw, { async: false, breaks: true }) as string;
+  return html
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+    .replace(/<a\s+href=/gi, '<a target="_blank" rel="noopener noreferrer" href=');
 }
 
 export function FeatureInspector({
   feature,
   canEdit,
+  hasAmapKey,
   isEditingNodes,
+  trafficActive,
+  trafficLoading,
   onSave,
   onDelete,
   onToggleEditNodes,
+  onToggleTraffic,
   onClose,
 }: FeatureInspectorProps) {
   const [title, setTitle] = useState(feature.title);
@@ -40,7 +50,8 @@ export function FeatureInspector({
   const [color, setColor] = useState(feature.color || '#2563eb');
   const [description, setDescription] = useState(feature.description);
   const [editing, setEditing] = useState(() => canEdit && !isMobileViewport());
-  const [previewMode, setPreviewMode] = useState(false);
+  const [previewMode, setPreviewMode] = useState(true);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setTitle(feature.title);
@@ -51,7 +62,7 @@ export function FeatureInspector({
 
   useEffect(() => {
     setEditing(canEdit && !isMobileViewport());
-    setPreviewMode(false);
+    setPreviewMode(true);
   }, [feature.id, canEdit]);
 
   const metricText = useMemo(() => {
@@ -68,6 +79,13 @@ export function FeatureInspector({
   }, [feature.geometry]);
 
   const renderedHtml = useMemo(() => renderSafeMarkdown(description), [description]);
+  const isDirty =
+    title !== feature.title ||
+    category !== feature.category ||
+    color !== (feature.color || '#2563eb') ||
+    description !== feature.description;
+  const geomTypeLabel =
+    feature.geometry.type === 'Point' ? '标记点' : feature.geometry.type === 'LineString' ? '路线' : '区域';
 
   function handleSubmit() {
     if (!canEdit) return;
@@ -78,9 +96,17 @@ export function FeatureInspector({
       color,
       description,
     });
+    setPreviewMode(true);
     if (isMobileViewport()) {
       setEditing(false);
     }
+  }
+
+  function enterNoteEditMode() {
+    setPreviewMode(false);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
   }
 
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -123,8 +149,22 @@ export function FeatureInspector({
         </div>
 
         <div className="inspector-body" style={{ padding: '10px 14px 12px', gap: 8 }}>
-          <div className="badge" style={{ width: 'fit-content' }}>
-            {metricText}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <div className="badge" style={{ width: 'fit-content' }}>
+              {metricText}
+            </div>
+            {feature.geometry.type === 'LineString' && hasAmapKey && (
+              <button
+                type="button"
+                className={`btn outline ${trafficActive ? 'active' : ''}`}
+                style={{ fontSize: 12, padding: '3px 8px' }}
+                disabled={trafficLoading}
+                onClick={() => onToggleTraffic(feature)}
+              >
+                <Activity size={13} />
+                {trafficLoading ? '拉取中...' : trafficActive ? '隐藏路况' : '查看实时路况'}
+              </button>
+            )}
           </div>
           {renderedHtml && (
             <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderedHtml }} />
@@ -137,10 +177,14 @@ export function FeatureInspector({
   // 完整编辑面板
   return (
     <section className="inspector">
-      <div className="sidebar-header">
-        <strong style={{ fontSize: 14 }}>编辑标注</strong>
+      <div className="inspector-header">
+        <div className="inspector-header-title">
+          <span className="color-dot" style={{ background: color }} />
+          <strong>{geomTypeLabel}详情</strong>
+          {isDirty && <span className="inspector-dirty-dot">未保存</span>}
+        </div>
         <button
-          className="btn"
+          className="btn icon-btn"
           onClick={() => (isMobileViewport() ? setEditing(false) : onClose())}
           title={isMobileViewport() ? '返回预览' : '关闭'}
         >
@@ -149,47 +193,55 @@ export function FeatureInspector({
       </div>
 
       <div className="inspector-body">
-        <div className="badge" style={{ width: 'fit-content' }}>
-          {metricText}
+        <div className="inspector-meta-card">
+          <div className="inspector-metric-text">{metricText}</div>
+          {feature.geometry.type === 'LineString' && (
+            <div className="inspector-line-actions">
+              <button
+                type="button"
+                className={`btn outline compact-btn ${isEditingNodes ? 'active' : ''}`}
+                onClick={() => onToggleEditNodes(feature.id)}
+              >
+                <Spline size={13} />
+                {isEditingNodes ? '退出换路' : '局部换路'}
+              </button>
+              {hasAmapKey && (
+                <button
+                  type="button"
+                  className={`btn outline compact-btn ${trafficActive ? 'active' : ''}`}
+                  disabled={trafficLoading}
+                  onClick={() => onToggleTraffic(feature)}
+                >
+                  <Activity size={13} />
+                  {trafficLoading ? '拉取中...' : trafficActive ? '隐藏路况' : '实时路况'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn outline compact-btn"
+                onClick={() => {
+                  const reversed = [...(feature.geometry.coordinates as number[][])].reverse();
+                  onSave({
+                    ...feature,
+                    title: title.trim() || '未命名标注',
+                    category: category.trim(),
+                    color,
+                    description,
+                    geometry: { type: 'LineString', coordinates: reversed },
+                  });
+                }}
+              >
+                <ArrowLeftRight size={13} />
+                反转方向
+              </button>
+            </div>
+          )}
         </div>
 
-        {feature.geometry.type === 'LineString' && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              className={`btn outline ${isEditingNodes ? 'active' : ''}`}
-              style={{ fontSize: 12, padding: '4px 8px' }}
-              onClick={() => onToggleEditNodes(feature.id)}
-            >
-              <Spline size={13} />
-              {isEditingNodes ? '退出局部换路' : '局部换路'}
-            </button>
-            <button
-              type="button"
-              className="btn outline"
-              style={{ fontSize: 12, padding: '4px 8px' }}
-              onClick={() => {
-                const reversed = [...(feature.geometry.coordinates as number[][])].reverse();
-                onSave({
-                  ...feature,
-                  title: title.trim() || '未命名标注',
-                  category: category.trim(),
-                  color,
-                  description,
-                  geometry: { type: 'LineString', coordinates: reversed },
-                });
-              }}
-            >
-              <ArrowLeftRight size={13} />
-              反转方向
-            </button>
-          </div>
-        )}
-
-        <div>
+        <div className="inspector-field">
           <label className="field-label">标题</label>
           <input
-            className="text-input"
+            className="text-input inspector-title-input"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={handleInputKeyDown}
@@ -197,7 +249,7 @@ export function FeatureInspector({
           />
         </div>
 
-        <div>
+        <div className="inspector-field">
           <label className="field-label">分组标签</label>
           <input
             className="text-input"
@@ -208,7 +260,7 @@ export function FeatureInspector({
           />
         </div>
 
-        <div>
+        <div className="inspector-field">
           <label className="field-label">颜色</label>
           <div className="color-swatches">
             {SWATCH_COLORS.map((hex) => (
@@ -216,7 +268,8 @@ export function FeatureInspector({
                 key={hex}
                 type="button"
                 className={`swatch ${color === hex ? 'active' : ''}`}
-                style={{ background: hex }}
+                style={{ background: hex, color: hex }}
+                aria-label={`选择颜色 ${hex}`}
                 onClick={() => {
                   setColor(hex);
                   onSave({
@@ -232,48 +285,82 @@ export function FeatureInspector({
           </div>
         </div>
 
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <div className="note-section">
+          <div className="note-header">
             <label className="field-label" style={{ marginBottom: 0 }}>
-              备注（支持 Markdown 与外链图片）
+              备注
             </label>
-            <button
-              type="button"
-              className="btn"
-              style={{ padding: '2px 6px', fontSize: 12 }}
-              onClick={() => setPreviewMode((prev) => !prev)}
-            >
-              {previewMode ? '编辑' : '预览'}
-            </button>
+            <div className="note-mode-tabs" role="tablist" aria-label="备注模式">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewMode}
+                className={`note-tab ${previewMode ? 'active' : ''}`}
+                onClick={() => setPreviewMode(true)}
+              >
+                <Eye size={12} />
+                预览
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!previewMode}
+                className={`note-tab ${!previewMode ? 'active' : ''}`}
+                onClick={enterNoteEditMode}
+              >
+                <Pencil size={12} />
+                编辑
+              </button>
+            </div>
           </div>
 
           {previewMode ? (
-            <div
-              className="markdown-preview"
-              dangerouslySetInnerHTML={{
-                __html: renderedHtml || '<span style="color:#94a3b8">暂无备注</span>',
-              }}
-            />
+            renderedHtml ? (
+              <div
+                className="markdown-preview editable"
+                onDoubleClick={enterNoteEditMode}
+                title="双击进入编辑"
+                dangerouslySetInnerHTML={{ __html: renderedHtml }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="note-empty-placeholder"
+                onClick={enterNoteEditMode}
+              >
+                点击添加备注（支持 Markdown 与外链图片）
+              </button>
+            )
           ) : (
-            <textarea
-              className="textarea-input"
-              rows={5}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="支持 Markdown，可直接贴外链图片：![照片](https://...)"
-            />
+            <div className="note-editor-wrap">
+              <textarea
+                ref={textareaRef}
+                className="textarea-input note-textarea"
+                rows={6}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSubmit();
+                  }
+                }}
+                placeholder="支持 Markdown，可直接贴外链图片：![照片](https://...)"
+              />
+              <div className="note-editor-hint">支持 Markdown 与外链图片 · Ctrl/⌘+Enter 保存</div>
+            </div>
           )}
         </div>
       </div>
 
-      <div className="sidebar-header" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+      <div className="inspector-footer">
         <button className="btn danger" onClick={() => onDelete(feature.id)}>
           <Trash2 size={14} />
           删除
         </button>
-        <button className="btn primary" onClick={handleSubmit}>
+        <button className={`btn ${isDirty ? 'primary' : 'outline'}`} onClick={handleSubmit}>
           <Save size={14} />
-          保存修改
+          {isDirty ? '保存修改' : '已保存'}
         </button>
       </div>
     </section>

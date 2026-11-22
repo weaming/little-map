@@ -73,8 +73,25 @@ export type BasemapId = 'amap-vec' | 'amap-sat' | 'google-vec' | 'google-sat' | 
 export type OverlayId = 'none' | 'amap-label' | 'amap-road' | 'google-road';
 
 export type RouteMode = 'driving' | 'bicycling' | 'walking';
-export type RouteSegmentMode = 'auto' | 'direct';
+export type RouteSegmentMode = 'auto' | 'highway' | 'national' | 'avoid-jam' | 'direct';
 export type RouteProvider = 'auto' | 'amap' | 'osrm';
+
+export interface RouteLeg {
+  index: number;
+  strategy: RouteSegmentMode;
+  from: number[];
+  to: number[];
+  via?: number[][];
+  distance_meters: number;
+  duration_seconds: number;
+  amap_nav_url: string;
+}
+
+export interface TrafficSegment {
+  status: string;
+  color: string;
+  coordinates: number[][];
+}
 
 export interface RouteResult {
   mode: RouteMode;
@@ -82,6 +99,8 @@ export interface RouteResult {
   distance_meters: number;
   duration_seconds: number;
   geometry: GeoGeometry;
+  legs?: RouteLeg[];
+  traffic_segments?: TrafficSegment[];
 }
 
 export type DrawTool = 'select' | 'point' | 'line' | 'polygon' | 'measure-distance' | 'measure-area' | 'route';

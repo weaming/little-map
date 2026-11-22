@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
-import { extractErrorMessage, planRoute } from '../api/client';
+import { extractErrorMessage, findHighwayBypassAnchors, planRoute, type BypassOption } from '../api/client';
 import { ensureAlignedTileProtocol } from '../map/alignedProtocol';
 import {
   BASEMAPS,
@@ -31,6 +31,7 @@ import type {
   RouteProvider,
   RouteResult,
   RouteSegmentMode,
+  TrafficSegment,
 } from '../types/map';
 
 interface MapCanvasProps {
@@ -43,6 +44,7 @@ interface MapCanvasProps {
   selectedFeatureId: string | null;
   editingLineFeatureId: string | null;
   searchPreview: PlaceResult | null;
+  trafficOverlay: TrafficSegment[] | null;
   tool: DrawTool;
   flyTarget: {
     lng: number;
@@ -65,6 +67,7 @@ interface MapCanvasProps {
 const FEATURES_SOURCE = 'little-map-features';
 const DRAFT_SOURCE = 'little-map-draft';
 const PREVIEW_SOURCE = 'little-map-search-preview';
+const TRAFFIC_OVERLAY_SOURCE = 'little-map-traffic-overlay';
 const BASEMAP_LAYER_PREFIX = 'basemap-layer-';
 const OVERLAY_LAYER_PREFIX = 'overlay-layer-';
 
@@ -231,6 +234,41 @@ function buildFeatureCollection(
   };
 }
 
+const DRIVING_SEG_CYCLE: RouteSegmentMode[] = ['auto', 'highway', 'national', 'avoid-jam', 'direct'];
+
+interface RouteDraftSnapshot {
+  coords: [number, number][];
+  names: string[];
+  segmentModes: RouteSegmentMode[];
+  avoidPoints: [number, number][];
+  avoidSegments: [number, number][][];
+}
+
+const MAX_ROUTE_HISTORY = 30;
+
+function segmentModeLabel(mode: RouteSegmentMode, routeMode: RouteMode): string {
+  if (mode === 'direct') return '直线 ⇄';
+  if (routeMode !== 'driving') return '贴路 ⇄';
+  switch (mode) {
+    case 'highway':
+      return '高速 ⇄';
+    case 'national':
+      return '国道 ⇄';
+    case 'avoid-jam':
+      return '避堵 ⇄';
+    default:
+      return '智能 ⇄';
+  }
+}
+
+function nextSegmentMode(cur: RouteSegmentMode, routeMode: RouteMode): RouteSegmentMode {
+  if (routeMode !== 'driving') {
+    return cur === 'direct' ? 'auto' : 'direct';
+  }
+  const idx = DRIVING_SEG_CYCLE.indexOf(cur);
+  return DRIVING_SEG_CYCLE[(idx + 1) % DRIVING_SEG_CYCLE.length];
+}
+
 function formatDuration(seconds: number): string {
   const mins = Math.max(1, Math.round(seconds / 60));
   if (mins >= 60) {
@@ -247,8 +285,10 @@ function buildDraftCollection(
   tool: DrawTool,
   basemap: BasemapId,
   routeGeometry?: GeoGeometry | null,
+  trafficSegments?: TrafficSegment[],
+  avoidSegments?: [number, number][][],
 ): GeoJSON.FeatureCollection {
-  if (draftCoords.length === 0) {
+  if (draftCoords.length === 0 && (!avoidSegments || avoidSegments.length === 0)) {
     return { type: 'FeatureCollection', features: [] };
   }
 
@@ -260,7 +300,33 @@ function buildDraftCollection(
   }));
 
   if (tool === 'route') {
-    if (routeGeometry) {
+    if (avoidSegments && avoidSegments.length > 0) {
+      for (const seg of avoidSegments) {
+        if (seg.length < 2) continue;
+        out.push({
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: seg.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap)),
+          },
+          properties: { kind: 'avoid-seg' },
+        });
+      }
+    }
+
+    if (trafficSegments && trafficSegments.length > 0) {
+      trafficSegments.forEach((seg, segIndex) => {
+        if (seg.coordinates.length < 2) return;
+        out.push({
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: seg.coordinates.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap)),
+          },
+          properties: { kind: 'traffic', color: seg.color, status: seg.status, segIndex },
+        });
+      });
+    } else if (routeGeometry) {
       out.push({
         type: 'Feature',
         geometry: geometryToDisplay(routeGeometry, basemap) as GeoJSON.Geometry,
@@ -323,6 +389,7 @@ export function MapCanvas({
   selectedFeatureId,
   editingLineFeatureId,
   searchPreview,
+  trafficOverlay,
   tool,
   flyTarget,
   userLocation,
@@ -354,6 +421,24 @@ export function MapCanvas({
   const [routeProvider, setRouteProvider] = useState<RouteProvider>('auto');
   const [defaultSegMode, setDefaultSegMode] = useState<RouteSegmentMode>('auto');
   const [routeSegmentModes, setRouteSegmentModes] = useState<RouteSegmentMode[]>([]);
+  const [routeAvoidPoints, setRouteAvoidPoints] = useState<[number, number][]>([]);
+  const [routeAvoidSegments, setRouteAvoidSegments] = useState<[number, number][][]>([]);
+  const [routeHistory, setRouteHistory] = useState<RouteDraftSnapshot[]>([]);
+  const [pickingAvoidPoint, setPickingAvoidPoint] = useState(false);
+  const [smartBypassEnabled, setSmartBypassEnabled] = useState(false);
+  const [bypassLoading, setBypassLoading] = useState(false);
+  const [bypassState, setBypassState] = useState<{
+    baseCoords: [number, number][];
+    baseNames: string[];
+    baseModes: RouteSegmentMode[];
+    baseAvoidSegments: [number, number][][];
+    avoidSeg: [number, number][];
+    segIdx: number;
+    insertAt: number;
+    summary: string;
+    options: BypassOption[];
+    activeId: string;
+  } | null>(null);
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState('');
@@ -374,10 +459,19 @@ export function MapCanvas({
     selectedFeatureId,
     editingLineFeatureId,
     searchPreview,
+    trafficOverlay,
     viewportBounds,
     tool,
     draftCoords,
+    draftNames,
+    routeSegmentModes,
+    routeAvoidPoints,
+    routeAvoidSegments,
+    routeProvider,
     defaultSegMode,
+    pickingAvoidPoint,
+    smartBypassEnabled,
+    routeResult,
     hoverCoord,
     measureFrozen,
     onSelectFeature,
@@ -391,16 +485,110 @@ export function MapCanvas({
     selectedFeatureId,
     editingLineFeatureId,
     searchPreview,
+    trafficOverlay,
     viewportBounds,
     tool,
     draftCoords,
+    draftNames,
+    routeSegmentModes,
+    routeAvoidPoints,
+    routeAvoidSegments,
+    routeProvider,
     defaultSegMode,
+    pickingAvoidPoint,
+    smartBypassEnabled,
+    routeResult,
     hoverCoord,
     measureFrozen,
     onSelectFeature,
     onCreateGeometry,
     onViewChange,
   };
+
+  function captureRouteSnapshot(): RouteDraftSnapshot {
+    const cur = latestRef.current;
+    return {
+      coords: cur.draftCoords.map((p) => [p[0], p[1]] as [number, number]),
+      names: [...cur.draftNames],
+      segmentModes: [...cur.routeSegmentModes],
+      avoidPoints: cur.routeAvoidPoints.map((p) => [p[0], p[1]] as [number, number]),
+      avoidSegments: cur.routeAvoidSegments.map((seg) => seg.map((p) => [p[0], p[1]] as [number, number])),
+    };
+  }
+
+  function pushRouteHistory(customSnap?: RouteDraftSnapshot) {
+    const snap = customSnap ?? captureRouteSnapshot();
+    setRouteHistory((prev) => {
+      const next = [...prev, snap];
+      return next.length > MAX_ROUTE_HISTORY ? next.slice(next.length - MAX_ROUTE_HISTORY) : next;
+    });
+  }
+
+  function undoRouteStep() {
+    setRouteHistory((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      setDraftCoords(last.coords);
+      setDraftNames(last.names);
+      setRouteSegmentModes(last.segmentModes);
+      setRouteAvoidPoints(last.avoidPoints);
+      setRouteAvoidSegments(last.avoidSegments);
+      setBypassLoading(false);
+      setBypassState(null);
+      return prev.slice(0, -1);
+    });
+  }
+
+  function applyBypassOption(
+    snapshot: {
+      baseCoords: [number, number][];
+      baseNames: string[];
+      baseModes: RouteSegmentMode[];
+      baseAvoidSegments: [number, number][][];
+      avoidSeg: [number, number][];
+      segIdx: number;
+      insertAt: number;
+    },
+    opt: BypassOption,
+  ) {
+    const { baseCoords, baseNames, baseModes, baseAvoidSegments, avoidSeg, segIdx, insertAt } = snapshot;
+    const paddedModes = [...baseModes];
+    while (paddedModes.length < Math.max(0, baseCoords.length - 1)) {
+      paddedModes.push(latestRef.current.defaultSegMode);
+    }
+
+    if (opt.kind === 'official') {
+      setDraftCoords(baseCoords);
+      setDraftNames(baseNames);
+      setRouteSegmentModes([
+        ...paddedModes.slice(0, segIdx),
+        opt.segment_modes[0] ?? 'avoid-jam',
+        ...paddedModes.slice(segIdx + 1),
+      ]);
+      setRouteAvoidSegments([...baseAvoidSegments, avoidSeg]);
+      return;
+    }
+
+    const addedPts: [number, number][] = [];
+    const addedNames: string[] = [];
+    if (opt.before) {
+      addedPts.push([opt.before.lng, opt.before.lat]);
+      addedNames.push(opt.before.name);
+    }
+    if (opt.after) {
+      addedPts.push([opt.after.lng, opt.after.lat]);
+      addedNames.push(opt.after.name);
+    }
+    setDraftCoords([...baseCoords.slice(0, insertAt), ...addedPts, ...baseCoords.slice(insertAt)]);
+    setDraftNames([...baseNames.slice(0, insertAt), ...addedNames, ...baseNames.slice(insertAt)]);
+    setRouteSegmentModes([
+      ...paddedModes.slice(0, segIdx),
+      ...opt.segment_modes,
+      ...paddedModes.slice(segIdx + 1),
+    ]);
+    // 拆段后由收费站+国道段负责绕行，不再叠加原拥堵带避免干扰
+    setRouteAvoidSegments(baseAvoidSegments);
+  }
 
   function ensureVectorLayers(map: maplibregl.Map) {
     const {
@@ -463,11 +651,48 @@ export function MapCanvas({
         id: 'draft-line',
         type: 'line',
         source: DRAFT_SOURCE,
-        filter: ['in', '$type', 'LineString', 'Polygon'],
+        filter: [
+          'all',
+          ['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'Polygon']],
+          ['!=', ['get', 'kind'], 'traffic'],
+          ['!=', ['get', 'kind'], 'avoid-seg'],
+        ],
         paint: {
           'line-color': '#f59e0b',
           'line-width': 3,
           'line-dasharray': [2, 1.5],
+        },
+      });
+
+      map.addLayer({
+        id: 'draft-avoid-seg-line',
+        type: 'line',
+        source: DRAFT_SOURCE,
+        filter: ['==', ['get', 'kind'], 'avoid-seg'],
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': '#dc2626',
+          'line-width': 11,
+          'line-opacity': 0.42,
+        },
+      });
+
+      map.addLayer({
+        id: 'draft-traffic-line',
+        type: 'line',
+        source: DRAFT_SOURCE,
+        filter: ['==', ['get', 'kind'], 'traffic'],
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
+          'line-width': 5.5,
+          'line-opacity': 0.92,
         },
       });
 
@@ -524,6 +749,28 @@ export function MapCanvas({
           'line-color': '#ef4444',
           'line-width': 2.5,
           'line-dasharray': [3, 2],
+        },
+      });
+    }
+
+    if (!map.getSource(TRAFFIC_OVERLAY_SOURCE)) {
+      map.addSource(TRAFFIC_OVERLAY_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+
+      map.addLayer({
+        id: 'traffic-overlay-line',
+        type: 'line',
+        source: TRAFFIC_OVERLAY_SOURCE,
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
+          'line-width': 5.5,
+          'line-opacity': 0.94,
         },
       });
     }
@@ -600,9 +847,98 @@ export function MapCanvas({
         return;
       }
 
-      if (curTool === 'route' && latestRef.current.draftCoords.length >= 2 && map.getLayer('draft-line')) {
-        const lineHits = map.queryRenderedFeatures(ev.point, { layers: ['draft-line'] });
+      if (curTool === 'route' && latestRef.current.pickingAvoidPoint) {
+        // 点中实时路况段：调用后端 /api/route/bypass 沿高速走廊搜索真实收费站/出入口，自动拆成三段接力
+        if (map.getLayer('draft-traffic-line')) {
+          const hits = map.queryRenderedFeatures(ev.point, { layers: ['draft-traffic-line'] });
+          const rawIdx = hits[0]?.properties?.segIndex;
+          const segIndex = typeof rawIdx === 'number' ? rawIdx : Number(rawIdx);
+          const curRes = latestRef.current.routeResult;
+          const hitSeg = !Number.isNaN(segIndex) ? curRes?.traffic_segments?.[segIndex] : undefined;
+          if (hitSeg && hitSeg.coordinates.length >= 2) {
+            const avoidCoords = hitSeg.coordinates.map(([lng, lat]): [number, number] => [lng, lat]);
+            const fullLine = (curRes?.geometry.coordinates as number[][] | undefined)?.map(
+              ([lng, lat]): [number, number] => [lng, lat],
+            );
+            const curWps = latestRef.current.draftCoords;
+            const curNames = latestRef.current.draftNames;
+            const curModes = latestRef.current.routeSegmentModes;
+            const curAvoidSegs = latestRef.current.routeAvoidSegments;
+            const insertAt = findNearestSegmentInsertIndex(curWps, avoidCoords[Math.floor(avoidCoords.length / 2)]);
+            const segIdx = Math.max(0, insertAt - 1);
+
+            // 仅当开启「智能拆段」开关时才启动收费站搜索 + 多方案真实算路赛马；关闭时纯粹走官方 avoidpolygons 避堵
+            if (latestRef.current.smartBypassEnabled && fullLine && fullLine.length >= 4) {
+              const historySnap = captureRouteSnapshot();
+              const snapshot = {
+                baseCoords: [...curWps],
+                baseNames: [...curNames],
+                baseModes: [...curModes],
+                baseAvoidSegments: [...curAvoidSegs],
+                avoidSeg: avoidCoords,
+                segIdx,
+                insertAt,
+              };
+              setBypassLoading(true);
+              setBypassState(null);
+              const segStart = curWps[segIdx];
+              const segEnd = curWps[Math.min(segIdx + 1, curWps.length - 1)];
+              const origMode = curModes[segIdx] ?? latestRef.current.defaultSegMode;
+
+              void findHighwayBypassAnchors({
+                route_coords: fullLine,
+                traffic_segments: curRes?.traffic_segments,
+                clicked_segment_idx: segIndex,
+                avoid_segment: avoidCoords,
+                start_point: segStart,
+                end_point: segEnd,
+                orig_mode: origMode,
+                orig_duration_seconds: curRes?.duration_seconds,
+                orig_distance_meters: curRes?.distance_meters,
+                provider: latestRef.current.routeProvider,
+              })
+                .then((res) => {
+                  const chosen =
+                    res.options.find((o) => o.id === res.recommended_id) ?? res.options[0];
+                  pushRouteHistory(historySnap);
+                  if (!chosen) {
+                    setRouteAvoidSegments([...snapshot.baseAvoidSegments, avoidCoords]);
+                    return;
+                  }
+                  applyBypassOption(snapshot, chosen);
+                  setBypassState({
+                    ...snapshot,
+                    summary: res.summary,
+                    options: res.options,
+                    activeId: chosen.id,
+                  });
+                })
+                .catch(() => {
+                  pushRouteHistory(historySnap);
+                  setRouteAvoidSegments([...snapshot.baseAvoidSegments, avoidCoords]);
+                })
+                .finally(() => {
+                  setBypassLoading(false);
+                });
+              return;
+            }
+
+            pushRouteHistory();
+            setRouteAvoidSegments((prev) => [...prev, avoidCoords]);
+            return;
+          }
+        }
+        pushRouteHistory();
+        setRouteAvoidPoints((prev) => [...prev, nextPt]);
+        return;
+      }
+
+      if (curTool === 'route' && latestRef.current.draftCoords.length >= 2) {
+        const routeLayers = ['draft-line', 'draft-traffic-line'].filter((id) => map.getLayer(id));
+        const lineHits = routeLayers.length > 0 ? map.queryRenderedFeatures(ev.point, { layers: routeLayers }) : [];
         if (lineHits.length > 0) {
+          pushRouteHistory();
+          setBypassState(null);
           const insertIdx = findNearestSegmentInsertIndex(latestRef.current.draftCoords, nextPt);
           setDraftCoords((prev) => [...prev.slice(0, insertIdx), nextPt, ...prev.slice(insertIdx)]);
           setDraftNames((names) => [...names.slice(0, insertIdx), '', ...names.slice(insertIdx)]);
@@ -612,6 +948,16 @@ export function MapCanvas({
           });
           return;
         }
+      }
+
+      if (curTool === 'route') {
+        const curCoords = latestRef.current.draftCoords;
+        const last = curCoords[curCoords.length - 1];
+        if (last && Math.abs(last[0] - nextPt[0]) < 1e-7 && Math.abs(last[1] - nextPt[1]) < 1e-7) {
+          return;
+        }
+        pushRouteHistory();
+        setBypassState(null);
       }
 
       setDraftCoords((prev) => {
@@ -697,6 +1043,12 @@ export function MapCanvas({
     setDraftCoords([]);
     setDraftNames([]);
     setRouteSegmentModes([]);
+    setRouteAvoidPoints([]);
+    setRouteAvoidSegments([]);
+    setRouteHistory([]);
+    setPickingAvoidPoint(false);
+    setBypassLoading(false);
+    setBypassState(null);
     setHoverCoord(null);
     setMeasureFrozen(false);
     setRouteResult(null);
@@ -708,6 +1060,22 @@ export function MapCanvas({
     }
   }, [tool]);
 
+  // 路线规划模式下支持 Ctrl/Cmd + Z 快捷键撤销上一步操作
+  useEffect(() => {
+    if (tool !== 'route') return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (!(ev.metaKey || ev.ctrlKey) || ev.shiftKey || ev.key.toLowerCase() !== 'z') return;
+      const target = ev.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      ev.preventDefault();
+      undoRouteStep();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [tool]);
+
   // 接收来自侧边栏点选的已有标注点作为规划途经点
   useEffect(() => {
     if (!externalWaypoint || tool !== 'route') return;
@@ -715,9 +1083,16 @@ export function MapCanvas({
       Number(externalWaypoint.coord[0].toFixed(6)),
       Number(externalWaypoint.coord[1].toFixed(6)),
     ];
+    const curCoords = latestRef.current.draftCoords;
+    const last = curCoords[curCoords.length - 1];
+    if (last && Math.abs(last[0] - pt[0]) < 1e-7 && Math.abs(last[1] - pt[1]) < 1e-7) {
+      return;
+    }
+    pushRouteHistory();
+    setBypassState(null);
     setDraftCoords((prev) => {
-      const last = prev[prev.length - 1];
-      if (last && Math.abs(last[0] - pt[0]) < 1e-7 && Math.abs(last[1] - pt[1]) < 1e-7) {
+      const prevLast = prev[prev.length - 1];
+      if (prevLast && Math.abs(prevLast[0] - pt[0]) < 1e-7 && Math.abs(prevLast[1] - pt[1]) < 1e-7) {
         return prev;
       }
       setDraftNames((names) => [...names, externalWaypoint.name ?? '']);
@@ -741,7 +1116,7 @@ export function MapCanvas({
     setRouteLoading(true);
     setRouteError('');
 
-    void planRoute(routeMode, draftCoords, routeProvider, routeSegmentModes)
+    void planRoute(routeMode, draftCoords, routeProvider, routeSegmentModes, routeAvoidPoints, routeAvoidSegments)
       .then((res) => {
         if (routeReqSeqRef.current !== seq) return;
         setRouteResult(res);
@@ -756,7 +1131,7 @@ export function MapCanvas({
           setRouteLoading(false);
         }
       });
-  }, [tool, routeMode, routeProvider, routeSegmentModes, draftCoords]);
+  }, [tool, routeMode, routeProvider, routeSegmentModes, routeAvoidPoints, routeAvoidSegments, draftCoords]);
 
   // 进入/退出已保存折线的「局部换路」模式（保留 100% 原始顶点）
   useEffect(() => {
@@ -824,17 +1199,26 @@ export function MapCanvas({
     if (!startPt || !endPt) return;
 
     const waypoints: [number, number][] = [startPt, ...detourViaPoints, endPt];
+    // 必经段直线模式且有 >=2 个必经点（如隧道入口..出口）时：两端 S->P1 与 Pk->E 走贴路规划，仅中间 P1..Pk 走直线
+    let segModes: RouteSegmentMode[] | undefined;
     if (!editSnapToRoad) {
-      setDetourPreviewCoords(waypoints);
-      setEditRerouting(false);
-      setEditRouteError('');
-      return;
+      if (detourViaPoints.length < 2) {
+        setDetourPreviewCoords(waypoints);
+        setEditRerouting(false);
+        setEditRouteError('');
+        return;
+      }
+      segModes = [
+        'auto',
+        ...Array<RouteSegmentMode>(detourViaPoints.length - 1).fill('direct'),
+        'auto',
+      ];
     }
 
     const seq = ++detourReqSeqRef.current;
     setEditRerouting(true);
     setEditRouteError('');
-    void planRoute(routeMode, waypoints, routeProvider)
+    void planRoute(routeMode, waypoints, routeProvider, segModes)
       .then((res) => {
         if (detourReqSeqRef.current !== seq) return;
         const seg = (res.geometry.coordinates as number[][]).map(([lng, lat]): [number, number] => [lng, lat]);
@@ -1138,7 +1522,17 @@ export function MapCanvas({
     const activeHover = measureFrozen || tool === 'route' ? null : hoverCoord;
     const src = map.getSource(DRAFT_SOURCE) as maplibregl.GeoJSONSource | undefined;
     if (src) {
-      src.setData(buildDraftCollection(draftCoords, activeHover, tool, basemap, routeResult?.geometry));
+      src.setData(
+        buildDraftCollection(
+          draftCoords,
+          activeHover,
+          tool,
+          basemap,
+          routeResult?.geometry,
+          routeResult?.traffic_segments,
+          routeAvoidSegments,
+        ),
+      );
     }
 
     for (const label of draftLabelsRef.current) {
@@ -1179,6 +1573,8 @@ export function MapCanvas({
         delBtn.title = '移除该途经点';
         delBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          pushRouteHistory();
+          setBypassState(null);
           setDraftCoords((prev) => prev.filter((_, i) => i !== idx));
           setDraftNames((prev) => prev.filter((_, i) => i !== idx));
           setRouteSegmentModes((modes) => {
@@ -1206,6 +1602,8 @@ export function MapCanvas({
         marker.on('dragend', () => {
           const ll = marker.getLngLat();
           const [wLng, wLat] = displayToWgs84(ll.lng, ll.lat, latestRef.current.basemap);
+          pushRouteHistory();
+          setBypassState(null);
           setDraftCoords((prev) =>
             prev.map((item, i) => (i === idx ? [Number(wLng.toFixed(6)), Number(wLat.toFixed(6))] : item)),
           );
@@ -1214,7 +1612,7 @@ export function MapCanvas({
         nextLabels.push(marker);
       });
 
-      // 每段中点放置「贴路 / 直线」独立切换徽章
+      // 每段中点放置独立策略切换徽章（驾车：智能/高速/国道/避堵/直线；骑行/徒步：贴路/直线）
       for (let i = 0; i < draftCoords.length - 1; i++) {
         const p1 = draftCoords[i];
         const p2 = draftCoords[i + 1];
@@ -1223,17 +1621,19 @@ export function MapCanvas({
 
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = mode === 'direct' ? 'measure-tag total' : 'measure-tag';
+        btn.className = mode !== 'auto' ? 'measure-tag total' : 'measure-tag';
         btn.style.pointerEvents = 'auto';
         btn.style.cursor = 'pointer';
-        btn.textContent = mode === 'direct' ? '直线 ⇄' : '贴路 ⇄';
-        btn.title = '点击切换此段为贴路规划或自由直线';
+        btn.textContent = segmentModeLabel(mode, routeMode);
+        btn.title = '点击切换此段策略';
         btn.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          pushRouteHistory();
+          setBypassState(null);
           setRouteSegmentModes((prev) => {
             const next = [...prev];
             while (next.length < draftCoords.length - 1) next.push('auto');
-            next[i] = next[i] === 'direct' ? 'auto' : 'direct';
+            next[i] = nextSegmentMode(next[i], routeMode);
             return next;
           });
         });
@@ -1243,6 +1643,68 @@ export function MapCanvas({
           .addTo(map);
         nextLabels.push(segMarker);
       }
+
+      // 渲染驾车避开区 Marker（点击 × 移除）
+      routeAvoidPoints.forEach((pt, idx) => {
+        const tag = document.createElement('div');
+        tag.className = 'measure-tag total';
+        tag.style.pointerEvents = 'auto';
+        tag.style.background = '#dc2626';
+        tag.style.borderColor = '#ffffff';
+        tag.style.display = 'inline-flex';
+        tag.style.alignItems = 'center';
+        tag.style.gap = '4px';
+        tag.textContent = `避开 ${idx + 1}`;
+
+        const delBtn = document.createElement('span');
+        delBtn.textContent = '×';
+        delBtn.style.cursor = 'pointer';
+        delBtn.style.fontWeight = '700';
+        delBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          pushRouteHistory();
+          setBypassState(null);
+          setRouteAvoidPoints((prev) => prev.filter((_, i) => i !== idx));
+        });
+        tag.appendChild(delBtn);
+
+        const avoidMarker = new maplibregl.Marker({ element: tag })
+          .setLngLat(wgs84ToDisplay(pt[0], pt[1], basemap))
+          .addTo(map);
+        nextLabels.push(avoidMarker);
+      });
+
+      // 渲染整段避开路中点标签（点击 × 移除）
+      routeAvoidSegments.forEach((seg, idx) => {
+        if (seg.length < 2) return;
+        const mid = seg[Math.floor(seg.length / 2)];
+        const tag = document.createElement('div');
+        tag.className = 'measure-tag total';
+        tag.style.pointerEvents = 'auto';
+        tag.style.background = '#b91c1c';
+        tag.style.borderColor = '#ffffff';
+        tag.style.display = 'inline-flex';
+        tag.style.alignItems = 'center';
+        tag.style.gap = '4px';
+        tag.textContent = `避开段 ${idx + 1}`;
+
+        const delBtn = document.createElement('span');
+        delBtn.textContent = '×';
+        delBtn.style.cursor = 'pointer';
+        delBtn.style.fontWeight = '700';
+        delBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          pushRouteHistory();
+          setBypassState(null);
+          setRouteAvoidSegments((prev) => prev.filter((_, i) => i !== idx));
+        });
+        tag.appendChild(delBtn);
+
+        const segMarker = new maplibregl.Marker({ element: tag })
+          .setLngLat(wgs84ToDisplay(mid[0], mid[1], basemap))
+          .addTo(map);
+        nextLabels.push(segMarker);
+      });
 
       draftLabelsRef.current = nextLabels;
       return;
@@ -1298,7 +1760,7 @@ export function MapCanvas({
     }
 
     draftLabelsRef.current = nextLabels;
-  }, [draftCoords, draftNames, routeSegmentModes, hoverCoord, measureFrozen, routeResult, editingLineFeatureId, tool, basemap]);
+  }, [draftCoords, draftNames, routeSegmentModes, routeAvoidPoints, routeAvoidSegments, routeMode, hoverCoord, measureFrozen, routeResult, editingLineFeatureId, tool, basemap]);
 
   // 飞行定位到目标 WGS-84 坐标或外接包围盒（仅在 flyTarget 变化时触发，切底图不重新飞转）
   useEffect(() => {
@@ -1410,6 +1872,33 @@ export function MapCanvas({
       .addTo(map);
   }, [searchPreview, basemap]);
 
+  // 渲染已保存路线的按需实时路况叠层
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const src = map.getSource(TRAFFIC_OVERLAY_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+
+    if (!trafficOverlay || trafficOverlay.length === 0) {
+      src.setData({ type: 'FeatureCollection', features: [] });
+      return;
+    }
+
+    src.setData({
+      type: 'FeatureCollection',
+      features: trafficOverlay
+        .filter((seg) => seg.coordinates.length >= 2)
+        .map((seg) => ({
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: seg.coordinates.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap)),
+          },
+          properties: { color: seg.color, status: seg.status },
+        })),
+    });
+  }, [trafficOverlay, basemap]);
+
   function finishDraft() {
     const { draftCoords: coords, tool: curTool, onCreateGeometry: createCb } = latestRef.current;
     if (curTool === 'line' && coords.length >= 2) {
@@ -1452,22 +1941,20 @@ export function MapCanvas({
           <button
             className={`btn ${!editSnapToRoad ? 'primary' : ''}`}
             onClick={() => setEditSnapToRoad((v) => !v)}
-            title="贴路重规划或直线连接必经点"
+            title="全段贴路，或仅必经点之间走直线（如穿隧道/捷径）且两端仍贴路"
           >
-            {editSnapToRoad ? '贴路' : '直线'}
+            {editSnapToRoad ? '全段贴路' : '必经段直线'}
           </button>
-          {editSnapToRoad && (
-            <select
-              className="select-input"
-              style={{ background: '#1e293b', color: '#fff', borderColor: '#475569', padding: '3px 6px', fontSize: 12 }}
-              value={routeProvider}
-              onChange={(e) => setRouteProvider(e.target.value as RouteProvider)}
-            >
-              <option value="auto">自动源</option>
-              <option value="amap">高德</option>
-              <option value="osrm">OSRM</option>
-            </select>
-          )}
+          <select
+            className="select-input"
+            style={{ background: '#1e293b', color: '#fff', borderColor: '#475569', padding: '3px 6px', fontSize: 12 }}
+            value={routeProvider}
+            onChange={(e) => setRouteProvider(e.target.value as RouteProvider)}
+          >
+            <option value="auto">自动源</option>
+            <option value="amap">高德</option>
+            <option value="osrm">OSRM</option>
+          </select>
           <span>
             {detourViaPoints.length === 0
               ? `点击地图或标注点添加必经点（总长 ${formatDistance(lineLengthMeters(editingLineCoords))}）`
@@ -1532,6 +2019,7 @@ export function MapCanvas({
 
     if (tool === 'route') {
       return (
+        <>
         <div className="draw-banner">
           <button
             className={`btn ${routeMode === 'driving' ? 'primary' : ''}`}
@@ -1541,23 +2029,68 @@ export function MapCanvas({
           </button>
           <button
             className={`btn ${routeMode === 'bicycling' ? 'primary' : ''}`}
-            onClick={() => setRouteMode('bicycling')}
+            onClick={() => {
+              setRouteMode('bicycling');
+              setPickingAvoidPoint(false);
+            }}
           >
             骑行
           </button>
           <button
             className={`btn ${routeMode === 'walking' ? 'primary' : ''}`}
-            onClick={() => setRouteMode('walking')}
+            onClick={() => {
+              setRouteMode('walking');
+              setPickingAvoidPoint(false);
+            }}
           >
             徒步
           </button>
-          <button
-            className={`btn ${defaultSegMode === 'direct' ? 'primary' : ''}`}
-            onClick={() => setDefaultSegMode((m) => (m === 'auto' ? 'direct' : 'auto'))}
-            title="新添加路段的默认方式：贴路规划或自由直线（也可点每段中点单独切换）"
-          >
-            {defaultSegMode === 'direct' ? '新段: 直线' : '新段: 贴路'}
-          </button>
+          {routeMode === 'driving' ? (
+            <>
+              <select
+                className="select-input"
+                style={{ background: '#1e293b', color: '#fff', borderColor: '#475569', padding: '3px 6px', fontSize: 12 }}
+                value={defaultSegMode}
+                onChange={(e) => setDefaultSegMode(e.target.value as RouteSegmentMode)}
+                title="新添加路段的默认驾车策略（每段中点也可独立切换）"
+              >
+                <option value="auto">新段: 智能</option>
+                <option value="highway">新段: 高速优先</option>
+                <option value="national">新段: 国道/不走高速</option>
+                <option value="avoid-jam">新段: 躲避拥堵</option>
+                <option value="direct">新段: 直线</option>
+              </select>
+              <button
+                className={`btn ${pickingAvoidPoint ? 'primary' : ''}`}
+                style={pickingAvoidPoint ? { background: '#dc2626' } : undefined}
+                onClick={() => setPickingAvoidPoint((v) => !v)}
+                title="开启后点击红/黄路况段可避开整段路，点击空白处可避开单点"
+              >
+                {pickingAvoidPoint
+                  ? '点路况段或地图标记避开中...'
+                  : `避开${
+                      routeAvoidPoints.length + routeAvoidSegments.length > 0
+                        ? `(${routeAvoidPoints.length + routeAvoidSegments.length})`
+                        : '路段/点'
+                    }`}
+              </button>
+              <button
+                className={`btn ${smartBypassEnabled ? 'primary' : ''}`}
+                onClick={() => setSmartBypassEnabled((v) => !v)}
+                title="关闭：仅走高德官方避堵 API；开启：点拥堵段时自动搜附近收费站拆为高速+国道接力"
+              >
+                {smartBypassEnabled ? '智能拆段: 开' : '智能拆段: 关'}
+              </button>
+            </>
+          ) : (
+            <button
+              className={`btn ${defaultSegMode === 'direct' ? 'primary' : ''}`}
+              onClick={() => setDefaultSegMode((m) => (m === 'auto' ? 'direct' : 'auto'))}
+              title="新添加路段的默认方式：贴路规划或自由直线（也可点每段中点单独切换）"
+            >
+              {defaultSegMode === 'direct' ? '新段: 直线' : '新段: 贴路'}
+            </button>
+          )}
           <select
             className="select-input"
             style={{ background: '#1e293b', color: '#fff', borderColor: '#475569', padding: '3px 6px', fontSize: 12 }}
@@ -1573,23 +2106,39 @@ export function MapCanvas({
             {draftCoords.length < 2
               ? draftCoords.length === 0
                 ? '点击地图或标注点选起点'
-                : '点终点（可拖拽途经点、点路线插点）'
+                : '点终点（每段中点可切高速/国道）'
               : routeLoading
                 ? '正在规划路线...'
                 : routeError
                   ? `规划失败：${routeError}`
                   : routeResult
-                    ? `${formatDistance(routeResult.distance_meters)} · 约 ${formatDuration(routeResult.duration_seconds)} (${routeResult.provider.toUpperCase()})`
+                    ? `${formatDistance(routeResult.distance_meters)} · 约 ${formatDuration(routeResult.duration_seconds)}${
+                        routeResult.legs && routeResult.legs.length > 1 ? ` · 拆为 ${routeResult.legs.length} 段导航` : ''
+                      } (${routeResult.provider.toUpperCase()})`
                     : ''}
           </span>
-          {draftCoords.length > 0 && (
+          {routeResult?.traffic_segments && routeResult.traffic_segments.length > 0 && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                opacity: 0.9,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              <span style={{ color: '#4ade80' }}>●畅通</span>
+              <span style={{ color: '#fbbf24' }}>●缓行</span>
+              <span style={{ color: '#f87171' }}>●拥堵</span>
+            </span>
+          )}
+          {routeHistory.length > 0 && (
             <button
               className="btn"
-              onClick={() => {
-                setDraftCoords((prev) => prev.slice(0, -1));
-                setDraftNames((prev) => prev.slice(0, -1));
-                setRouteSegmentModes((prev) => prev.slice(0, -1));
-              }}
+              onClick={undoRouteStep}
+              title="撤销上一步操作 (Ctrl/Cmd+Z)"
             >
               撤销
             </button>
@@ -1602,19 +2151,31 @@ export function MapCanvas({
                 setDraftCoords([]);
                 setDraftNames([]);
                 setRouteSegmentModes([]);
+                setRouteAvoidPoints([]);
+                setRouteAvoidSegments([]);
+                setRouteHistory([]);
+                setPickingAvoidPoint(false);
+                setBypassLoading(false);
+                setBypassState(null);
                 setRouteResult(null);
               }}
             >
               保存路线
             </button>
           )}
-          {draftCoords.length > 0 && (
+          {(draftCoords.length > 0 || routeAvoidPoints.length > 0 || routeAvoidSegments.length > 0) && (
             <button
               className="btn"
               onClick={() => {
+                pushRouteHistory();
                 setDraftCoords([]);
                 setDraftNames([]);
                 setRouteSegmentModes([]);
+                setRouteAvoidPoints([]);
+                setRouteAvoidSegments([]);
+                setPickingAvoidPoint(false);
+                setBypassLoading(false);
+                setBypassState(null);
                 setRouteResult(null);
                 setRouteError('');
               }}
@@ -1626,6 +2187,40 @@ export function MapCanvas({
             退出
           </button>
         </div>
+        {(bypassLoading || bypassState) && (
+          <div className="bypass-compare-bar">
+            {bypassLoading ? (
+              <span>正在搜沿线收费站并实测多方案耗时...</span>
+            ) : (
+              bypassState && (
+                <>
+                  <span style={{ color: '#93c5fd', fontWeight: 600 }}>{bypassState.summary}</span>
+                  {bypassState.options.map((opt) => (
+                    <button
+                      key={opt.id}
+                      className={`btn ${bypassState.activeId === opt.id ? 'primary' : ''}`}
+                      onClick={() => {
+                        applyBypassOption(bypassState, opt);
+                        setBypassState((prev) => (prev ? { ...prev, activeId: opt.id } : prev));
+                      }}
+                      title={opt.summary}
+                    >
+                      {opt.summary}
+                    </button>
+                  ))}
+                  <button
+                    className="btn"
+                    onClick={() => setBypassState(null)}
+                    title="关闭对比条"
+                  >
+                    ×
+                  </button>
+                </>
+              )
+            )}
+          </div>
+        )}
+        </>
       );
     }
 

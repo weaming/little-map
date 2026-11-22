@@ -9,6 +9,7 @@ import {
   fetchCapabilities,
   fetchMap,
   getExportUrl,
+  planRoute,
   reverseGeocode,
   updateMapMeta,
   upsertFeatures,
@@ -39,6 +40,7 @@ import type {
   PlaceResult,
   RouteResult,
   ServerCapabilities,
+  TrafficSegment,
 } from './types/map';
 
 interface RecentMapItem {
@@ -171,6 +173,11 @@ export function App() {
     seq: number;
   } | null>(null);
   const [editingLineFeatureId, setEditingLineFeatureId] = useState<string | null>(null);
+  const [trafficOverlay, setTrafficOverlay] = useState<{
+    featureId: string;
+    segments: TrafficSegment[];
+  } | null>(null);
+  const [trafficLoading, setTrafficLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
 
@@ -427,21 +434,50 @@ export function App() {
       route.mode === 'walking' ? '徒步路线' : route.mode === 'driving' ? '驾车路线' : '骑行路线';
     const defaultColor =
       route.mode === 'walking' ? '#16a34a' : route.mode === 'driving' ? '#d97706' : '#2563eb';
-    const mins = Math.max(1, Math.round(route.duration_seconds / 60));
-    const durText = mins >= 60 ? `${Math.floor(mins / 60)} 小时 ${mins % 60} 分钟` : `${mins} 分钟`;
+    const formatDur = (sec: number) => {
+      const m = Math.max(1, Math.round(sec / 60));
+      return m >= 60 ? `${Math.floor(m / 60)} 小时 ${m % 60} 分钟` : `${m} 分钟`;
+    };
+    const strategyName = (s: string) => {
+      switch (s) {
+        case 'highway':
+          return '高速优先';
+        case 'national':
+          return '国道/不走高速';
+        case 'avoid-jam':
+          return '躲避拥堵';
+        case 'direct':
+          return '自由直线';
+        default:
+          return '智能默认';
+      }
+    };
     const distText = formatDistance(route.distance_meters);
+    const durText = formatDur(route.duration_seconds);
     const namedStops = waypointNames.filter((n) => n.trim() !== '');
     const title =
       namedStops.length >= 2
         ? `${modeLabel}：${namedStops[0]} → ${namedStops[namedStops.length - 1]}`
         : `${modeLabel} · ${distText}`;
     const stopsLine = namedStops.length > 0 ? `\n- 途经点：${namedStops.join(' → ')}` : '';
+
+    let legsSection = '';
+    if (route.legs && route.legs.length > 0) {
+      const rows = route.legs.map((leg) => {
+        const legDist = formatDistance(leg.distance_meters);
+        const legDur = formatDur(leg.duration_seconds);
+        const link = leg.amap_nav_url ? ` · [打开高德导航](${leg.amap_nav_url})` : '';
+        return `${leg.index}. **${strategyName(leg.strategy)}**（${legDist} · 约 ${legDur}）${link}`;
+      });
+      legsSection = `\n\n### 分段接力导航（共 ${route.legs.length} 段）\n` + rows.join('\n');
+    }
+
     try {
       const resp = await upsertFeatures(mapMeta.id, editToken, mapMeta.revision, [
         {
           title,
           category: modeLabel,
-          description: `- 方式：${modeLabel}\n- 总距离：${distText}\n- 预计耗时：约 ${durText}${stopsLine}\n- 规划源：${route.provider.toUpperCase()}`,
+          description: `- 方式：${modeLabel}\n- 总距离：${distText}\n- 预计耗时：约 ${durText}${stopsLine}\n- 规划源：${route.provider.toUpperCase()}${legsSection}`,
           color: pickDominantColor(features, 'LineString', defaultColor),
           geometry: route.geometry,
           visible: true,
@@ -458,6 +494,53 @@ export function App() {
     } catch (err) {
       const { message, isConflict } = extractErrorMessage(err);
       notify(message, isConflict);
+    }
+  }
+
+  async function handleToggleTraffic(feature: MapFeature) {
+    if (feature.geometry.type !== 'LineString') return;
+    if (trafficOverlay?.featureId === feature.id) {
+      setTrafficOverlay(null);
+      return;
+    }
+
+    const coords = feature.geometry.coordinates as number[][];
+    if (coords.length < 2) return;
+
+    // 均匀抽取最多 12 个关键点（保留首尾），后端通过高德 waypoints 单次请求拉取（仅耗 1 QPS）
+    const maxPts = 12;
+    const sampled: [number, number][] = [];
+    if (coords.length <= maxPts) {
+      for (const [lng, lat] of coords) sampled.push([lng, lat]);
+    } else {
+      const step = (coords.length - 1) / (maxPts - 1);
+      for (let i = 0; i < maxPts - 1; i++) {
+        const [lng, lat] = coords[Math.round(i * step)];
+        sampled.push([lng, lat]);
+      }
+      const [lastLng, lastLat] = coords[coords.length - 1];
+      sampled.push([lastLng, lastLat]);
+    }
+
+    setTrafficLoading(true);
+    try {
+      const res = await planRoute('driving', sampled, 'amap');
+      if (!res.traffic_segments || res.traffic_segments.length === 0) {
+        notify(
+          res.provider.startsWith('amap')
+            ? '当前路线暂无实时路况数据'
+            : '高德路况拉取失败（已降级 OSRM），请查看服务端日志',
+        );
+        return;
+      }
+      setTrafficOverlay({ featureId: feature.id, segments: res.traffic_segments });
+      const mins = Math.max(1, Math.round(res.duration_seconds / 60));
+      const durText = mins >= 60 ? `${Math.floor(mins / 60)} 小时 ${mins % 60} 分钟` : `${mins} 分钟`;
+      notify(`实时路况已更新 · 预计驾车约 ${durText}`);
+    } catch (err) {
+      notify(`拉取实时路况失败：${extractErrorMessage(err).message}`);
+    } finally {
+      setTrafficLoading(false);
     }
   }
 
@@ -789,6 +872,7 @@ export function App() {
             selectedFeatureId={selectedFeatureId}
             editingLineFeatureId={editingLineFeatureId}
             searchPreview={searchPreview}
+            trafficOverlay={trafficOverlay?.segments ?? null}
             tool={tool}
             flyTarget={flyTarget}
             userLocation={userLocation}
@@ -796,6 +880,7 @@ export function App() {
             onSelectFeature={(id) => {
               setSelectedFeatureId(id);
               if (id !== editingLineFeatureId) setEditingLineFeatureId(null);
+              if (id !== trafficOverlay?.featureId) setTrafficOverlay(null);
               if (id === null) setSearchPreview(null);
             }}
             onCreateGeometry={handleCreateGeometry}
@@ -866,18 +951,25 @@ export function App() {
             <FeatureInspector
               feature={selectedFeature}
               canEdit={canEdit}
+              hasAmapKey={capabilities.has_amap_key}
               isEditingNodes={editingLineFeatureId === selectedFeature.id}
+              trafficActive={trafficOverlay?.featureId === selectedFeature.id}
+              trafficLoading={trafficLoading}
               onSave={handleSaveFeature}
               onDelete={(fid) => {
                 if (editingLineFeatureId === fid) setEditingLineFeatureId(null);
+                if (trafficOverlay?.featureId === fid) setTrafficOverlay(null);
                 void handleDeleteFeature(fid);
               }}
               onToggleEditNodes={(fid) => {
                 setTool('select');
+                setTrafficOverlay(null);
                 setEditingLineFeatureId((prev) => (prev === fid ? null : fid));
               }}
+              onToggleTraffic={(f) => void handleToggleTraffic(f)}
               onClose={() => {
                 setEditingLineFeatureId(null);
+                setTrafficOverlay(null);
                 setSelectedFeatureId(null);
               }}
             />
