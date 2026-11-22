@@ -105,6 +105,12 @@ type searchPlaceOut struct {
 	Results  []service.PlaceResult `json:"results"`
 }
 
+type planRouteArgs struct {
+	Mode      string      `json:"mode,omitempty" jsonschema:"Route mode: bicycling or walking (default bicycling)"`
+	Waypoints [][]float64 `json:"waypoints" jsonschema:"Ordered list of [lng, lat] WGS-84 waypoints (at least 2)"`
+	Provider  string      `json:"provider,omitempty" jsonschema:"Provider: auto, amap, or osrm"`
+}
+
 func registerTools(server *mcp.Server, svc *service.Service, cfg *config.Config) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "create_map",
@@ -207,6 +213,21 @@ func registerTools(server *mcp.Server, svc *service.Service, cfg *config.Config)
 			Results:  results,
 		}
 		return jsonTextResult(out), out, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "plan_route",
+		Description: "Plan a bicycling or walking route through WGS-84 waypoints and return distance, duration, and a WGS-84 LineString geometry.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args planRouteArgs) (*mcp.CallToolResult, *service.RouteResult, error) {
+		res, err := svc.PlanRoute(ctx, service.RouteInput{
+			Mode:      args.Mode,
+			Waypoints: args.Waypoints,
+			Provider:  args.Provider,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return jsonTextResult(res), res, nil
 	})
 }
 
