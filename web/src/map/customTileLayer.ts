@@ -24,6 +24,8 @@ interface TileEntry {
   loading: boolean;
   failed: boolean;
   lastUsed: number;
+  // 瓦片 4 个顶点的双精度归一化 Mercator 坐标 [tlX, tlY, blX, blY, trX, trY, brX, brY]
+  mercatorVerts: Float64Array;
 }
 
 interface VisibleTileQuad {
@@ -32,8 +34,8 @@ interface VisibleTileQuad {
   z: number;
   x: number;
   y: number;
-  // 4 个顶点在 MapLibre 归一化 MercatorCoordinate 下的位置 [tlX, tlY, blX, blY, trX, trY, brX, brY]
-  verts: Float32Array;
+  // 4 个顶点在 MapLibre 双精度归一化 MercatorCoordinate 下的位置 [tlX, tlY, blX, blY, trX, trY, brX, brY]
+  mercatorVerts: Float64Array;
 }
 
 const MAX_GPU_TEXTURES = 160;
@@ -107,23 +109,76 @@ function buildDirectTileUrl(provider: WebGLTileProvider, z: number, x: number, y
   }
 }
 
-function makeQuadVerts(
+function isPowerOfTwo(v: number): boolean {
+  return v > 0 && (v & (v - 1)) === 0;
+}
+
+function makeMercatorVerts(
   tl: [number, number],
   bl: [number, number],
   tr: [number, number],
   br: [number, number],
-): Float32Array {
+): Float64Array {
   const mTL = maplibregl.MercatorCoordinate.fromLngLat(tl);
   const mBL = maplibregl.MercatorCoordinate.fromLngLat(bl);
   const mTR = maplibregl.MercatorCoordinate.fromLngLat(tr);
   const mBR = maplibregl.MercatorCoordinate.fromLngLat(br);
-  // TRIANGLE_STRIP 顺序: TL(0,0), BL(0,1), TR(1,0), BR(1,1)
-  return new Float32Array([
-    mTL.x, mTL.y, 0, 0,
-    mBL.x, mBL.y, 0, 1,
-    mTR.x, mTR.y, 1, 0,
-    mBR.x, mBR.y, 1, 1,
+  // TRIANGLE_STRIP 顺序: TL, BL, TR, BR
+  return new Float64Array([
+    mTL.x, mTL.y,
+    mBL.x, mBL.y,
+    mTR.x, mTR.y,
+    mBR.x, mBR.y,
   ]);
+}
+
+// 在 CPU Float64 下将列主序矩阵右乘平移 T(ox, oy, 0)，避免高缩放级别 Float32 顶点截断抖动。
+function buildRelativeMatrix(
+  matrix: ArrayLike<number>,
+  ox: number,
+  oy: number,
+  out: Float32Array,
+): Float32Array {
+  for (let i = 0; i < 12; i++) {
+    out[i] = matrix[i];
+  }
+  for (let row = 0; row < 4; row++) {
+    out[12 + row] = matrix[row] * ox + matrix[4 + row] * oy + matrix[12 + row];
+  }
+  return out;
+}
+
+function writeRelativeQuadVerts(
+  mercatorVerts: Float64Array,
+  ox: number,
+  oy: number,
+  u0: number,
+  v0: number,
+  u1: number,
+  v1: number,
+  out: Float32Array,
+): Float32Array {
+  out[0] = mercatorVerts[0] - ox;
+  out[1] = mercatorVerts[1] - oy;
+  out[2] = u0;
+  out[3] = v0;
+
+  out[4] = mercatorVerts[2] - ox;
+  out[5] = mercatorVerts[3] - oy;
+  out[6] = u0;
+  out[7] = v1;
+
+  out[8] = mercatorVerts[4] - ox;
+  out[9] = mercatorVerts[5] - oy;
+  out[10] = u1;
+  out[11] = v0;
+
+  out[12] = mercatorVerts[6] - ox;
+  out[13] = mercatorVerts[7] - oy;
+  out[14] = u1;
+  out[15] = v1;
+
+  return out;
 }
 
 function computeVisibleBaiduQuads(
@@ -199,7 +254,7 @@ function computeVisibleBaiduQuads(
         z: bz,
         x: bx,
         y: by,
-        verts: makeQuadVerts(tl, bl, tr, br),
+        mercatorVerts: makeMercatorVerts(tl, bl, tr, br),
       });
     }
   }
@@ -261,7 +316,7 @@ function computeVisibleGcjQuads(
         z,
         x: tx,
         y: ty,
-        verts: makeQuadVerts(tl, bl, tr, br),
+        mercatorVerts: makeMercatorVerts(tl, bl, tr, br),
       });
     }
   }
@@ -291,6 +346,9 @@ export function createAlignedWebGLLayer(
   let frameTick = 0;
   let removed = false;
 
+  const relativeMatrix = new Float32Array(16);
+  const quadVertsBuf = new Float32Array(16);
+
   function evictOldTextures(gl: WebGLRenderingContext) {
     if (tiles.size <= MAX_GPU_TEXTURES) return;
     const entries = [...tiles.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
@@ -305,7 +363,13 @@ export function createAlignedWebGLLayer(
   }
 
   function requestTile(quad: VisibleTileQuad) {
-    const entry: TileEntry = { texture: null, loading: true, failed: false, lastUsed: frameTick };
+    const entry: TileEntry = {
+      texture: null,
+      loading: true,
+      failed: false,
+      lastUsed: frameTick,
+      mercatorVerts: quad.mercatorVerts,
+    };
     tiles.set(quad.key, entry);
 
     const ctrl = new AbortController();
@@ -334,13 +398,20 @@ export function createAlignedWebGLLayer(
           entry.failed = true;
           return;
         }
+        const canMipmap = isPowerOfTwo(bmp.width) && isPowerOfTwo(bmp.height);
         gl.bindTexture(gl.TEXTURE_2D, tex);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+        // 预乘 Alpha，避免透明文字瓦片在 Mipmap / 线性插值时边缘发黑
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+        if (canMipmap) {
+          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        } else {
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        }
         bmp.close();
 
         entry.texture = tex;
@@ -356,6 +427,64 @@ export function createAlignedWebGLLayer(
       .finally(() => {
         controllers.delete(ctrl);
       });
+  }
+
+  function drawQuad(
+    gl: WebGLRenderingContext,
+    tex: WebGLTexture,
+    mercatorVerts: Float64Array,
+    ox: number,
+    oy: number,
+    u0: number,
+    v0: number,
+    u1: number,
+    v1: number,
+  ) {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    writeRelativeQuadVerts(mercatorVerts, ox, oy, u0, v0, u1, v1, quadVertsBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, quadVertsBuf, gl.STREAM_DRAW);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  // 新层级瓦片加载中时，用已缓存的父级（UV 裁剪）或子级瓦片无重叠占位，消除跨级闪烁。
+  function drawFallbackTile(
+    gl: WebGLRenderingContext,
+    quad: VisibleTileQuad,
+    suffix: string,
+    ox: number,
+    oy: number,
+  ) {
+    // 1. 优先向上找最近的已缓存父瓦片（最多查 2 级），仅裁剪子区域 UV，透明叠加层 0 重影
+    for (let dz = 1; dz <= 2; dz++) {
+      const pz = quad.z - dz;
+      if (pz < 1) break;
+      const scale = 1 << dz;
+      const px = Math.floor(quad.x / scale);
+      const py = Math.floor(quad.y / scale);
+      const parent = tiles.get(`${pz}/${px}/${py}${suffix}`);
+      if (!parent?.texture) continue;
+
+      parent.lastUsed = frameTick;
+      const xLocal = quad.x - px * scale;
+      const yLocal = quad.y - py * scale;
+      const u0 = xLocal / scale;
+      const u1 = (xLocal + 1) / scale;
+      const v0 = isBaidu ? 1 - (yLocal + 1) / scale : yLocal / scale;
+      const v1 = isBaidu ? 1 - yLocal / scale : (yLocal + 1) / scale;
+      drawQuad(gl, parent.texture, quad.mercatorVerts, ox, oy, u0, v0, u1, v1);
+      return;
+    }
+
+    // 2. 缩小时向下找已缓存的 4 个子瓦片占位
+    const cz = quad.z + 1;
+    for (let dy = 0; dy <= 1; dy++) {
+      for (let dx = 0; dx <= 1; dx++) {
+        const child = tiles.get(`${cz}/${quad.x * 2 + dx}/${quad.y * 2 + dy}${suffix}`);
+        if (!child?.texture) continue;
+        child.lastUsed = frameTick;
+        drawQuad(gl, child.texture, child.mercatorVerts, ox, oy, 0, 0, 1, 1);
+      }
+    }
   }
 
   return {
@@ -401,12 +530,20 @@ export function createAlignedWebGLLayer(
         : computeVisibleGcjQuads(mapRef, provider, maxzoom, targetCrs);
       if (quads.length === 0) return;
 
+      const center = mapRef.getCenter();
+      const origin = maplibregl.MercatorCoordinate.fromLngLat(center);
+      const ox = origin.x;
+      const oy = origin.y;
+      buildRelativeMatrix(matrix, ox, oy, relativeMatrix);
+
+      const suffix = isTraffic ? `@${Math.floor(Date.now() / 120000)}` : '';
+
       gl.useProgram(program);
-      gl.uniformMatrix4fv(uMatrixLoc, false, matrix);
+      gl.uniformMatrix4fv(uMatrixLoc, false, relativeMatrix);
       gl.uniform1i(uTexLoc, 0);
 
       gl.enable(gl.BLEND);
-      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
       gl.enableVertexAttribArray(aPosLoc);
@@ -419,14 +556,16 @@ export function createAlignedWebGLLayer(
         const entry = tiles.get(quad.key);
         if (!entry) {
           requestTile(quad);
+          drawFallbackTile(gl, quad, suffix, ox, oy);
           continue;
         }
         entry.lastUsed = frameTick;
-        if (!entry.texture) continue;
+        if (!entry.texture) {
+          drawFallbackTile(gl, quad, suffix, ox, oy);
+          continue;
+        }
 
-        gl.bindTexture(gl.TEXTURE_2D, entry.texture);
-        gl.bufferData(gl.ARRAY_BUFFER, quad.verts, gl.STREAM_DRAW);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        drawQuad(gl, entry.texture, quad.mercatorVerts, ox, oy, 0, 0, 1, 1);
       }
     },
 
