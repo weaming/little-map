@@ -106,10 +106,12 @@ type searchPlaceOut struct {
 }
 
 type planRouteArgs struct {
-	Mode         string      `json:"mode,omitempty" jsonschema:"Route mode: driving, bicycling, or walking (default bicycling)"`
-	Waypoints    [][]float64 `json:"waypoints" jsonschema:"Ordered list of [lng, lat] WGS-84 waypoints (at least 2)"`
-	SegmentModes []string    `json:"segment_modes,omitempty" jsonschema:"Optional per-segment mode list (auto or direct), length = len(waypoints)-1"`
-	Provider     string      `json:"provider,omitempty" jsonschema:"Provider: auto, amap, or osrm"`
+	Mode          string        `json:"mode,omitempty" jsonschema:"Route mode: driving, bicycling, or walking (default bicycling)"`
+	Waypoints     [][]float64   `json:"waypoints" jsonschema:"Ordered list of [lng, lat] WGS-84 waypoints (at least 2)"`
+	SegmentModes  []string      `json:"segment_modes,omitempty" jsonschema:"Optional per-segment mode list (auto, highway, national, avoid-jam, or direct)"`
+	AvoidPoints   [][]float64   `json:"avoid_points,omitempty" jsonschema:"Optional WGS-84 points to avoid when driving"`
+	AvoidSegments [][][]float64 `json:"avoid_segments,omitempty" jsonschema:"Optional WGS-84 polylines (congested road segments) to avoid when driving"`
+	Provider      string        `json:"provider,omitempty" jsonschema:"Provider: auto, amap, or osrm"`
 }
 
 func registerTools(server *mcp.Server, svc *service.Service, cfg *config.Config) {
@@ -221,10 +223,12 @@ func registerTools(server *mcp.Server, svc *service.Service, cfg *config.Config)
 		Description: "Plan a bicycling or walking route through WGS-84 waypoints and return distance, duration, and a WGS-84 LineString geometry.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args planRouteArgs) (*mcp.CallToolResult, *service.RouteResult, error) {
 		res, err := svc.PlanRoute(ctx, service.RouteInput{
-			Mode:         args.Mode,
-			Waypoints:    args.Waypoints,
-			SegmentModes: args.SegmentModes,
-			Provider:     args.Provider,
+			Mode:          args.Mode,
+			Waypoints:     args.Waypoints,
+			SegmentModes:  args.SegmentModes,
+			AvoidPoints:   args.AvoidPoints,
+			AvoidSegments: args.AvoidSegments,
+			Provider:      args.Provider,
 		})
 		if err != nil {
 			return nil, nil, err
