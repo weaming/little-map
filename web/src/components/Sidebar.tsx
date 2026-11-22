@@ -297,8 +297,8 @@ export function Sidebar({
               <span style={{ color: '#64748b', display: 'flex' }}>{featureIcon(f.geometry.type)}</span>
               <div className="feature-meta">
                 <div className="feature-title">{f.title || '未命名标注'}</div>
-                <div className="feature-sub">
-                  {f.category ? `[${f.category}] ` : ''}
+                {f.category && <div className="feature-sub">[{f.category}]</div>}
+                <div className="feature-sub" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {featureSummary(f)}
                 </div>
               </div>
