@@ -170,6 +170,7 @@ export function App() {
     name?: string;
     seq: number;
   } | null>(null);
+  const [editingLineFeatureId, setEditingLineFeatureId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
 
@@ -422,7 +423,10 @@ export function App() {
 
   async function handleSaveRoute(route: RouteResult, waypointNames: string[]) {
     if (!mapMeta || !canEdit) return;
-    const modeLabel = route.mode === 'walking' ? '徒步路线' : '骑行路线';
+    const modeLabel =
+      route.mode === 'walking' ? '徒步路线' : route.mode === 'driving' ? '驾车路线' : '骑行路线';
+    const defaultColor =
+      route.mode === 'walking' ? '#16a34a' : route.mode === 'driving' ? '#d97706' : '#2563eb';
     const mins = Math.max(1, Math.round(route.duration_seconds / 60));
     const durText = mins >= 60 ? `${Math.floor(mins / 60)} 小时 ${mins % 60} 分钟` : `${mins} 分钟`;
     const distText = formatDistance(route.distance_meters);
@@ -438,7 +442,7 @@ export function App() {
           title,
           category: modeLabel,
           description: `- 方式：${modeLabel}\n- 总距离：${distText}\n- 预计耗时：约 ${durText}${stopsLine}\n- 规划源：${route.provider.toUpperCase()}`,
-          color: pickDominantColor(features, 'LineString', route.mode === 'walking' ? '#16a34a' : '#2563eb'),
+          color: pickDominantColor(features, 'LineString', defaultColor),
           geometry: route.geometry,
           visible: true,
         },
@@ -783,6 +787,7 @@ export function App() {
             initialZoom={savedView ? savedView.zoom : mapMeta.zoom}
             features={features}
             selectedFeatureId={selectedFeatureId}
+            editingLineFeatureId={editingLineFeatureId}
             searchPreview={searchPreview}
             tool={tool}
             flyTarget={flyTarget}
@@ -790,10 +795,22 @@ export function App() {
             externalWaypoint={externalWaypoint}
             onSelectFeature={(id) => {
               setSelectedFeatureId(id);
+              if (id !== editingLineFeatureId) setEditingLineFeatureId(null);
               if (id === null) setSearchPreview(null);
             }}
             onCreateGeometry={handleCreateGeometry}
             onSaveRoute={(route, names) => void handleSaveRoute(route, names)}
+            onSaveEditedLine={(featureId, coords) => {
+              const target = features.find((f) => f.id === featureId);
+              if (target) {
+                void handleSaveFeature({
+                  ...target,
+                  geometry: { type: 'LineString', coordinates: coords },
+                });
+              }
+              setEditingLineFeatureId(null);
+            }}
+            onCancelEditLine={() => setEditingLineFeatureId(null)}
             onToolCancel={() => setTool('select')}
             onViewChange={(view) => saveView(mapMeta.id, view)}
           />
@@ -849,9 +866,20 @@ export function App() {
             <FeatureInspector
               feature={selectedFeature}
               canEdit={canEdit}
+              isEditingNodes={editingLineFeatureId === selectedFeature.id}
               onSave={handleSaveFeature}
-              onDelete={handleDeleteFeature}
-              onClose={() => setSelectedFeatureId(null)}
+              onDelete={(fid) => {
+                if (editingLineFeatureId === fid) setEditingLineFeatureId(null);
+                void handleDeleteFeature(fid);
+              }}
+              onToggleEditNodes={(fid) => {
+                setTool('select');
+                setEditingLineFeatureId((prev) => (prev === fid ? null : fid));
+              }}
+              onClose={() => {
+                setEditingLineFeatureId(null);
+                setSelectedFeatureId(null);
+              }}
             />
           )}
 

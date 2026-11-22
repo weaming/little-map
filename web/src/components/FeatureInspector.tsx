@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { marked } from 'marked';
-import { Pencil, Save, Trash2, X } from 'lucide-react';
+import { ArrowLeftRight, Pencil, Save, Spline, Trash2, X } from 'lucide-react';
 import { formatArea, formatDistance, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
 import type { MapFeature } from '../types/map';
 
@@ -9,8 +9,10 @@ const SWATCH_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#
 interface FeatureInspectorProps {
   feature: MapFeature;
   canEdit: boolean;
+  isEditingNodes: boolean;
   onSave: (updated: MapFeature) => void;
   onDelete: (featureId: string) => void;
+  onToggleEditNodes: (featureId: string) => void;
   onClose: () => void;
 }
 
@@ -24,7 +26,15 @@ function renderSafeMarkdown(raw: string): string {
   return html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
 }
 
-export function FeatureInspector({ feature, canEdit, onSave, onDelete, onClose }: FeatureInspectorProps) {
+export function FeatureInspector({
+  feature,
+  canEdit,
+  isEditingNodes,
+  onSave,
+  onDelete,
+  onToggleEditNodes,
+  onClose,
+}: FeatureInspectorProps) {
   const [title, setTitle] = useState(feature.title);
   const [category, setCategory] = useState(feature.category);
   const [color, setColor] = useState(feature.color || '#2563eb');
@@ -142,6 +152,39 @@ export function FeatureInspector({ feature, canEdit, onSave, onDelete, onClose }
         <div className="badge" style={{ width: 'fit-content' }}>
           {metricText}
         </div>
+
+        {feature.geometry.type === 'LineString' && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className={`btn outline ${isEditingNodes ? 'active' : ''}`}
+              style={{ fontSize: 12, padding: '4px 8px' }}
+              onClick={() => onToggleEditNodes(feature.id)}
+            >
+              <Spline size={13} />
+              {isEditingNodes ? '退出局部换路' : '局部换路'}
+            </button>
+            <button
+              type="button"
+              className="btn outline"
+              style={{ fontSize: 12, padding: '4px 8px' }}
+              onClick={() => {
+                const reversed = [...(feature.geometry.coordinates as number[][])].reverse();
+                onSave({
+                  ...feature,
+                  title: title.trim() || '未命名标注',
+                  category: category.trim(),
+                  color,
+                  description,
+                  geometry: { type: 'LineString', coordinates: reversed },
+                });
+              }}
+            >
+              <ArrowLeftRight size={13} />
+              反转方向
+            </button>
+          </div>
+        )}
 
         <div>
           <label className="field-label">标题</label>

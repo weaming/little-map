@@ -5,7 +5,10 @@ import { ensureAlignedTileProtocol } from '../map/alignedProtocol';
 import {
   BASEMAPS,
   OVERLAYS,
+  computeDetourWindow,
   displayToWgs84,
+  findNearestSegmentInsertIndex,
+  findNearestVertexIndex,
   formatArea,
   formatDistance,
   geometryToDisplay,
@@ -13,6 +16,7 @@ import {
   isViewportInsidePolygon,
   lineLengthMeters,
   polygonAreaSqMeters,
+  spliceLineSegment,
   wgs84ToDisplay,
   type WgsBounds,
 } from '../map/geo';
@@ -24,7 +28,9 @@ import type {
   OverlayId,
   PlaceResult,
   RouteMode,
+  RouteProvider,
   RouteResult,
+  RouteSegmentMode,
 } from '../types/map';
 
 interface MapCanvasProps {
@@ -35,6 +41,7 @@ interface MapCanvasProps {
   initialZoom: number;
   features: MapFeature[];
   selectedFeatureId: string | null;
+  editingLineFeatureId: string | null;
   searchPreview: PlaceResult | null;
   tool: DrawTool;
   flyTarget: {
@@ -49,6 +56,8 @@ interface MapCanvasProps {
   onSelectFeature: (id: string | null) => void;
   onCreateGeometry: (geometry: GeoGeometry) => void;
   onSaveRoute: (route: RouteResult, waypointNames: string[]) => void;
+  onSaveEditedLine: (featureId: string, coords: [number, number][]) => void;
+  onCancelEditLine: () => void;
   onToolCancel: () => void;
   onViewChange?: (view: { lng: number; lat: number; zoom: number }) => void;
 }
@@ -312,6 +321,7 @@ export function MapCanvas({
   initialZoom,
   features,
   selectedFeatureId,
+  editingLineFeatureId,
   searchPreview,
   tool,
   flyTarget,
@@ -320,6 +330,8 @@ export function MapCanvas({
   onSelectFeature,
   onCreateGeometry,
   onSaveRoute,
+  onSaveEditedLine,
+  onCancelEditLine,
   onToolCancel,
   onViewChange,
 }: MapCanvasProps) {
@@ -327,6 +339,7 @@ export function MapCanvas({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
   const draftLabelsRef = useRef<maplibregl.Marker[]>([]);
+  const editLineMarkersRef = useRef<maplibregl.Marker[]>([]);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const previewMarkerRef = useRef<maplibregl.Marker | null>(null);
   const prevBasemapRef = useRef<BasemapId>(basemap);
@@ -338,19 +351,33 @@ export function MapCanvas({
   const [measureFrozen, setMeasureFrozen] = useState(false);
   const [viewportBounds, setViewportBounds] = useState<WgsBounds | null>(null);
   const [routeMode, setRouteMode] = useState<RouteMode>('bicycling');
+  const [routeProvider, setRouteProvider] = useState<RouteProvider>('auto');
+  const [defaultSegMode, setDefaultSegMode] = useState<RouteSegmentMode>('auto');
+  const [routeSegmentModes, setRouteSegmentModes] = useState<RouteSegmentMode[]>([]);
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState('');
+  const [editingLineCoords, setEditingLineCoords] = useState<[number, number][]>([]);
+  const [detourViaPoints, setDetourViaPoints] = useState<[number, number][]>([]);
+  const [detourWindow, setDetourWindow] = useState<{ startIdx: number; endIdx: number } | null>(null);
+  const [detourManualRange, setDetourManualRange] = useState(false);
+  const [detourPreviewCoords, setDetourPreviewCoords] = useState<[number, number][] | null>(null);
+  const [editSnapToRoad, setEditSnapToRoad] = useState(true);
+  const [editRerouting, setEditRerouting] = useState(false);
+  const [editRouteError, setEditRouteError] = useState('');
+  const detourReqSeqRef = useRef(0);
 
   const latestRef = useRef({
     basemap,
     overlay,
     features,
     selectedFeatureId,
+    editingLineFeatureId,
     searchPreview,
     viewportBounds,
     tool,
     draftCoords,
+    defaultSegMode,
     hoverCoord,
     measureFrozen,
     onSelectFeature,
@@ -362,10 +389,12 @@ export function MapCanvas({
     overlay,
     features,
     selectedFeatureId,
+    editingLineFeatureId,
     searchPreview,
     viewportBounds,
     tool,
     draftCoords,
+    defaultSegMode,
     hoverCoord,
     measureFrozen,
     onSelectFeature,
@@ -530,8 +559,21 @@ export function MapCanvas({
     });
 
     map.on('click', (ev) => {
-      const { tool: curTool, basemap: curBasemap, onSelectFeature: selCb, onCreateGeometry: createCb } =
-        latestRef.current;
+      const {
+        tool: curTool,
+        basemap: curBasemap,
+        editingLineFeatureId: curEditLineId,
+        onSelectFeature: selCb,
+        onCreateGeometry: createCb,
+      } = latestRef.current;
+
+      // 局部换路模式下：点击地图添加必经途经点
+      if (curEditLineId) {
+        const [wLng, wLat] = displayToWgs84(ev.lngLat.lng, ev.lngLat.lat, curBasemap);
+        const viaPt: [number, number] = [Number(wLng.toFixed(6)), Number(wLat.toFixed(6))];
+        setDetourViaPoints((prev) => [...prev, viaPt]);
+        return;
+      }
 
       if (curTool === 'select') {
         const hitLayers = ['features-line', 'features-fill'].filter((id) => map.getLayer(id));
@@ -558,12 +600,29 @@ export function MapCanvas({
         return;
       }
 
+      if (curTool === 'route' && latestRef.current.draftCoords.length >= 2 && map.getLayer('draft-line')) {
+        const lineHits = map.queryRenderedFeatures(ev.point, { layers: ['draft-line'] });
+        if (lineHits.length > 0) {
+          const insertIdx = findNearestSegmentInsertIndex(latestRef.current.draftCoords, nextPt);
+          setDraftCoords((prev) => [...prev.slice(0, insertIdx), nextPt, ...prev.slice(insertIdx)]);
+          setDraftNames((names) => [...names.slice(0, insertIdx), '', ...names.slice(insertIdx)]);
+          setRouteSegmentModes((modes) => {
+            const inherited = modes[insertIdx - 1] ?? latestRef.current.defaultSegMode;
+            return [...modes.slice(0, insertIdx - 1), inherited, inherited, ...modes.slice(insertIdx)];
+          });
+          return;
+        }
+      }
+
       setDraftCoords((prev) => {
         const last = prev[prev.length - 1];
         if (last && Math.abs(last[0] - nextPt[0]) < 1e-7 && Math.abs(last[1] - nextPt[1]) < 1e-7) {
           return prev;
         }
         setDraftNames((names) => [...names, '']);
+        if (curTool === 'route' && prev.length >= 1) {
+          setRouteSegmentModes((modes) => [...modes, latestRef.current.defaultSegMode]);
+        }
         return [...prev, nextPt];
       });
     });
@@ -619,6 +678,10 @@ export function MapCanvas({
         label.remove();
       }
       draftLabelsRef.current = [];
+      for (const m of editLineMarkersRef.current) {
+        m.remove();
+      }
+      editLineMarkersRef.current = [];
       userMarkerRef.current?.remove();
       userMarkerRef.current = null;
       previewMarkerRef.current?.remove();
@@ -633,6 +696,7 @@ export function MapCanvas({
   useEffect(() => {
     setDraftCoords([]);
     setDraftNames([]);
+    setRouteSegmentModes([]);
     setHoverCoord(null);
     setMeasureFrozen(false);
     setRouteResult(null);
@@ -657,11 +721,14 @@ export function MapCanvas({
         return prev;
       }
       setDraftNames((names) => [...names, externalWaypoint.name ?? '']);
+      if (prev.length >= 1) {
+        setRouteSegmentModes((modes) => [...modes, latestRef.current.defaultSegMode]);
+      }
       return [...prev, pt];
     });
   }, [externalWaypoint, tool]);
 
-  // 规划模式下途经点 >= 2 时自动请求骑行/徒步路线
+  // 规划模式下途经点 >= 2 时自动请求骑行/徒步路线（支持分段贴路/直线与切换数据源）
   useEffect(() => {
     if (tool !== 'route' || draftCoords.length < 2) {
       setRouteResult(null);
@@ -674,7 +741,7 @@ export function MapCanvas({
     setRouteLoading(true);
     setRouteError('');
 
-    void planRoute(routeMode, draftCoords)
+    void planRoute(routeMode, draftCoords, routeProvider, routeSegmentModes)
       .then((res) => {
         if (routeReqSeqRef.current !== seq) return;
         setRouteResult(res);
@@ -689,7 +756,242 @@ export function MapCanvas({
           setRouteLoading(false);
         }
       });
-  }, [tool, routeMode, draftCoords]);
+  }, [tool, routeMode, routeProvider, routeSegmentModes, draftCoords]);
+
+  // 进入/退出已保存折线的「局部换路」模式（保留 100% 原始顶点）
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!editingLineFeatureId) {
+      setEditingLineCoords([]);
+      setDetourViaPoints([]);
+      setDetourWindow(null);
+      setDetourManualRange(false);
+      setDetourPreviewCoords(null);
+      setEditRerouting(false);
+      setEditRouteError('');
+      if (map) map.getCanvas().style.cursor = tool === 'select' ? '' : 'crosshair';
+      return;
+    }
+    const target = features.find((f) => f.id === editingLineFeatureId);
+    if (!target || target.geometry.type !== 'LineString') {
+      setEditingLineCoords([]);
+      return;
+    }
+    const fullCoords: [number, number][] = (target.geometry.coordinates as number[][]).map(([lng, lat]) => [
+      lng,
+      lat,
+    ]);
+    setEditingLineCoords(fullCoords);
+    setDetourViaPoints([]);
+    setDetourWindow(null);
+    setDetourManualRange(false);
+    setDetourPreviewCoords(null);
+    setEditRouteError('');
+    if (map) map.getCanvas().style.cursor = 'crosshair';
+    if (target.category === '徒步路线') {
+      setRouteMode('walking');
+    } else if (target.category === '驾车路线') {
+      setRouteMode('driving');
+    } else if (target.category === '骑行路线') {
+      setRouteMode('bicycling');
+    }
+  }, [editingLineFeatureId, features, tool]);
+
+  // 必经点或出行方式变化时，自动按偏离距离计算建议的换路范围 [startIdx .. endIdx]
+  useEffect(() => {
+    if (!editingLineFeatureId || editingLineCoords.length < 2 || detourViaPoints.length === 0) {
+      setDetourWindow(null);
+      setDetourPreviewCoords(null);
+      setDetourManualRange(false);
+      return;
+    }
+    if (!detourManualRange) {
+      setDetourWindow(computeDetourWindow(editingLineCoords, detourViaPoints, routeMode));
+    }
+  }, [editingLineFeatureId, editingLineCoords, detourViaPoints, routeMode, detourManualRange]);
+
+  // 换路范围 + 必经点变化时，自动请求 [S, 必经点..., E] 局部重规划预览
+  useEffect(() => {
+    if (!editingLineFeatureId || !detourWindow || detourViaPoints.length === 0 || editingLineCoords.length < 2) {
+      setDetourPreviewCoords(null);
+      setEditRerouting(false);
+      setEditRouteError('');
+      return;
+    }
+
+    const startPt = editingLineCoords[detourWindow.startIdx];
+    const endPt = editingLineCoords[detourWindow.endIdx];
+    if (!startPt || !endPt) return;
+
+    const waypoints: [number, number][] = [startPt, ...detourViaPoints, endPt];
+    if (!editSnapToRoad) {
+      setDetourPreviewCoords(waypoints);
+      setEditRerouting(false);
+      setEditRouteError('');
+      return;
+    }
+
+    const seq = ++detourReqSeqRef.current;
+    setEditRerouting(true);
+    setEditRouteError('');
+    void planRoute(routeMode, waypoints, routeProvider)
+      .then((res) => {
+        if (detourReqSeqRef.current !== seq) return;
+        const seg = (res.geometry.coordinates as number[][]).map(([lng, lat]): [number, number] => [lng, lat]);
+        setDetourPreviewCoords(seg);
+      })
+      .catch((err) => {
+        if (detourReqSeqRef.current !== seq) return;
+        setDetourPreviewCoords(null);
+        setEditRouteError(extractErrorMessage(err).message);
+      })
+      .finally(() => {
+        if (detourReqSeqRef.current === seq) {
+          setEditRerouting(false);
+        }
+      });
+  }, [editingLineFeatureId, editingLineCoords, detourWindow, detourViaPoints, editSnapToRoad, routeMode, routeProvider]);
+
+  // 渲染局部换路预览（新路段高亮 + 可拖拽换路起终点 S/E + 可拖拽/删除必经点）
+  useEffect(() => {
+    const map = mapRef.current;
+    for (const m of editLineMarkersRef.current) {
+      m.remove();
+    }
+    editLineMarkersRef.current = [];
+    if (!map || !editingLineFeatureId || editingLineCoords.length < 2) return;
+
+    const src = map.getSource(DRAFT_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    if (src) {
+      const displayFeatures: GeoJSON.Feature[] = [];
+      const mergedPreview =
+        detourWindow && detourPreviewCoords
+          ? spliceLineSegment(editingLineCoords, detourWindow.startIdx, detourWindow.endIdx, detourPreviewCoords)
+          : editingLineCoords;
+      displayFeatures.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: mergedPreview.map(([lng, lat]) => wgs84ToDisplay(lng, lat, basemap)),
+        },
+        properties: {},
+      });
+      src.setData({ type: 'FeatureCollection', features: displayFeatures });
+    }
+
+    const markers: maplibregl.Marker[] = [];
+
+    // 换路起点 S 与终点 E（可沿原折线拖动调整换路范围）
+    if (detourWindow) {
+      const endpoints: Array<{ kind: 'start' | 'end'; idx: number; label: string; bg: string }> = [
+        { kind: 'start', idx: detourWindow.startIdx, label: '换路起点 S', bg: '#16a34a' },
+        { kind: 'end', idx: detourWindow.endIdx, label: '换路终点 E', bg: '#dc2626' },
+      ];
+      for (const ep of endpoints) {
+        const pt = editingLineCoords[ep.idx];
+        if (!pt) continue;
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.alignItems = 'center';
+        wrap.style.cursor = 'grab';
+
+        const tag = document.createElement('div');
+        tag.className = 'measure-tag total';
+        tag.style.background = ep.bg;
+        tag.style.borderColor = '#ffffff';
+        tag.style.marginBottom = '3px';
+        tag.textContent = ep.label;
+        wrap.appendChild(tag);
+
+        const dot = document.createElement('span');
+        dot.style.width = '14px';
+        dot.style.height = '14px';
+        dot.style.borderRadius = '50%';
+        dot.style.background = ep.bg;
+        dot.style.border = '2.5px solid #ffffff';
+        dot.style.boxShadow = '0 2px 6px rgba(0,0,0,0.35)';
+        wrap.appendChild(dot);
+
+        const marker = new maplibregl.Marker({ element: wrap, draggable: true, anchor: 'bottom' })
+          .setLngLat(wgs84ToDisplay(pt[0], pt[1], basemap))
+          .addTo(map);
+
+        marker.on('dragend', () => {
+          const ll = marker.getLngLat();
+          const [wLng, wLat] = displayToWgs84(ll.lng, ll.lat, latestRef.current.basemap);
+          const { index: snappedIdx } = findNearestVertexIndex(editingLineCoords, [wLng, wLat]);
+          setDetourManualRange(true);
+          setDetourWindow((prev) => {
+            if (!prev) return prev;
+            if (ep.kind === 'start') {
+              const nextStart = Math.min(snappedIdx, prev.endIdx - 1);
+              return { startIdx: Math.max(0, nextStart), endIdx: prev.endIdx };
+            }
+            const nextEnd = Math.max(snappedIdx, prev.startIdx + 1);
+            return { startIdx: prev.startIdx, endIdx: Math.min(editingLineCoords.length - 1, nextEnd) };
+          });
+        });
+        markers.push(marker);
+      }
+    }
+
+    // 必经途经点 Marker（可拖动微调、点击 × 删除）
+    detourViaPoints.forEach((pt, idx) => {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.alignItems = 'center';
+      wrap.style.cursor = 'grab';
+
+      const pill = document.createElement('div');
+      pill.className = 'measure-tag node';
+      pill.style.pointerEvents = 'auto';
+      pill.style.display = 'inline-flex';
+      pill.style.alignItems = 'center';
+      pill.style.gap = '4px';
+      pill.style.marginBottom = '3px';
+      pill.textContent = `必经 ${idx + 1}`;
+
+      const delBtn = document.createElement('span');
+      delBtn.textContent = '×';
+      delBtn.style.cursor = 'pointer';
+      delBtn.style.fontWeight = '700';
+      delBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        setDetourViaPoints((prev) => prev.filter((_, i) => i !== idx));
+      });
+      pill.appendChild(delBtn);
+      wrap.appendChild(pill);
+
+      const dot = document.createElement('span');
+      dot.style.width = '14px';
+      dot.style.height = '14px';
+      dot.style.borderRadius = '50%';
+      dot.style.background = '#2563eb';
+      dot.style.border = '2.5px solid #ffffff';
+      dot.style.boxShadow = '0 2px 6px rgba(0,0,0,0.35)';
+      wrap.appendChild(dot);
+
+      const marker = new maplibregl.Marker({ element: wrap, draggable: true, anchor: 'bottom' })
+        .setLngLat(wgs84ToDisplay(pt[0], pt[1], basemap))
+        .addTo(map);
+
+      marker.on('dragend', () => {
+        const ll = marker.getLngLat();
+        const [wLng, wLat] = displayToWgs84(ll.lng, ll.lat, latestRef.current.basemap);
+        setDetourViaPoints((prev) =>
+          prev.map((item, i) => (i === idx ? [Number(wLng.toFixed(6)), Number(wLat.toFixed(6))] : item)),
+        );
+      });
+      markers.push(marker);
+    });
+
+    editLineMarkersRef.current = markers;
+    return () => {
+      for (const m of markers) m.remove();
+    };
+  }, [editingLineFeatureId, editingLineCoords, detourWindow, detourViaPoints, detourPreviewCoords, basemap]);
 
   // 键盘 ESC 退出绘制或测距
   useEffect(() => {
@@ -788,6 +1090,10 @@ export function MapCanvas({
 
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        if (latestRef.current.editingLineFeatureId) {
+          setDetourViaPoints((prev) => [...prev, [Number(lng.toFixed(6)), Number(lat.toFixed(6))]]);
+          return;
+        }
         const curTool = latestRef.current.tool;
         if (curTool === 'select') {
           latestRef.current.onSelectFeature(f.id);
@@ -807,6 +1113,9 @@ export function MapCanvas({
               return prev;
             }
             setDraftNames((names) => [...names, f.title || '']);
+            if (curTool === 'route' && prev.length >= 1) {
+              setRouteSegmentModes((modes) => [...modes, latestRef.current.defaultSegMode]);
+            }
             return [...prev, snapped];
           });
         }
@@ -824,6 +1133,8 @@ export function MapCanvas({
     const map = mapRef.current;
     if (!map) return;
 
+    if (editingLineFeatureId) return;
+
     const activeHover = measureFrozen || tool === 'route' ? null : hoverCoord;
     const src = map.getSource(DRAFT_SOURCE) as maplibregl.GeoJSONSource | undefined;
     if (src) {
@@ -837,14 +1148,102 @@ export function MapCanvas({
 
     if (tool === 'route' && draftCoords.length > 0) {
       const nextLabels: maplibregl.Marker[] = [];
+
+      // 可拖拽的途经点 Marker（拖动改路 + 点击 × 删除单个途经点）
       draftCoords.forEach((pt, idx) => {
         const isStart = idx === 0;
         const isEnd = idx === draftCoords.length - 1 && draftCoords.length >= 2;
         const name = draftNames[idx];
         const prefix = isStart ? '起点' : isEnd ? '终点' : `途经 ${idx}`;
-        const tag = name ? `${prefix}: ${name}` : prefix;
-        nextLabels.push(createMeasureMarker(map, pt, basemap, tag, isEnd ? 'total' : 'node', [0, -18]));
+
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.alignItems = 'center';
+        wrap.style.cursor = 'grab';
+
+        const pill = document.createElement('div');
+        pill.className = isEnd ? 'measure-tag total' : 'measure-tag node';
+        pill.style.pointerEvents = 'auto';
+        pill.style.display = 'inline-flex';
+        pill.style.alignItems = 'center';
+        pill.style.gap = '4px';
+        pill.style.marginBottom = '3px';
+        pill.textContent = name ? `${prefix}: ${name}` : prefix;
+
+        const delBtn = document.createElement('span');
+        delBtn.textContent = '×';
+        delBtn.style.cursor = 'pointer';
+        delBtn.style.fontWeight = '700';
+        delBtn.style.padding = '0 2px';
+        delBtn.title = '移除该途经点';
+        delBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          setDraftCoords((prev) => prev.filter((_, i) => i !== idx));
+          setDraftNames((prev) => prev.filter((_, i) => i !== idx));
+          setRouteSegmentModes((modes) => {
+            if (modes.length === 0) return modes;
+            const removeSegIdx = idx === 0 ? 0 : idx - 1;
+            return modes.filter((_, i) => i !== removeSegIdx);
+          });
+        });
+        pill.appendChild(delBtn);
+        wrap.appendChild(pill);
+
+        const dot = document.createElement('span');
+        dot.style.width = '14px';
+        dot.style.height = '14px';
+        dot.style.borderRadius = '50%';
+        dot.style.background = isStart ? '#16a34a' : isEnd ? '#dc2626' : '#f59e0b';
+        dot.style.border = '2.5px solid #ffffff';
+        dot.style.boxShadow = '0 2px 6px rgba(0,0,0,0.35)';
+        wrap.appendChild(dot);
+
+        const marker = new maplibregl.Marker({ element: wrap, draggable: true, anchor: 'bottom' })
+          .setLngLat(wgs84ToDisplay(pt[0], pt[1], basemap))
+          .addTo(map);
+
+        marker.on('dragend', () => {
+          const ll = marker.getLngLat();
+          const [wLng, wLat] = displayToWgs84(ll.lng, ll.lat, latestRef.current.basemap);
+          setDraftCoords((prev) =>
+            prev.map((item, i) => (i === idx ? [Number(wLng.toFixed(6)), Number(wLat.toFixed(6))] : item)),
+          );
+          setDraftNames((prev) => prev.map((n, i) => (i === idx ? '' : n)));
+        });
+        nextLabels.push(marker);
       });
+
+      // 每段中点放置「贴路 / 直线」独立切换徽章
+      for (let i = 0; i < draftCoords.length - 1; i++) {
+        const p1 = draftCoords[i];
+        const p2 = draftCoords[i + 1];
+        const mid: [number, number] = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+        const mode = routeSegmentModes[i] ?? 'auto';
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = mode === 'direct' ? 'measure-tag total' : 'measure-tag';
+        btn.style.pointerEvents = 'auto';
+        btn.style.cursor = 'pointer';
+        btn.textContent = mode === 'direct' ? '直线 ⇄' : '贴路 ⇄';
+        btn.title = '点击切换此段为贴路规划或自由直线';
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          setRouteSegmentModes((prev) => {
+            const next = [...prev];
+            while (next.length < draftCoords.length - 1) next.push('auto');
+            next[i] = next[i] === 'direct' ? 'auto' : 'direct';
+            return next;
+          });
+        });
+
+        const segMarker = new maplibregl.Marker({ element: btn })
+          .setLngLat(wgs84ToDisplay(mid[0], mid[1], basemap))
+          .addTo(map);
+        nextLabels.push(segMarker);
+      }
+
       draftLabelsRef.current = nextLabels;
       return;
     }
@@ -899,7 +1298,7 @@ export function MapCanvas({
     }
 
     draftLabelsRef.current = nextLabels;
-  }, [draftCoords, draftNames, hoverCoord, measureFrozen, routeResult, tool, basemap]);
+  }, [draftCoords, draftNames, routeSegmentModes, hoverCoord, measureFrozen, routeResult, editingLineFeatureId, tool, basemap]);
 
   // 飞行定位到目标 WGS-84 坐标或外接包围盒（仅在 flyTarget 变化时触发，切底图不重新飞转）
   useEffect(() => {
@@ -1025,6 +1424,100 @@ export function MapCanvas({
   }
 
   function renderDraftBanner() {
+    if (editingLineFeatureId) {
+      const mergedPreview =
+        detourWindow && detourPreviewCoords
+          ? spliceLineSegment(editingLineCoords, detourWindow.startIdx, detourWindow.endIdx, detourPreviewCoords)
+          : editingLineCoords;
+      return (
+        <div className="draw-banner">
+          <button
+            className={`btn ${routeMode === 'driving' ? 'primary' : ''}`}
+            onClick={() => setRouteMode('driving')}
+          >
+            驾车
+          </button>
+          <button
+            className={`btn ${routeMode === 'bicycling' ? 'primary' : ''}`}
+            onClick={() => setRouteMode('bicycling')}
+          >
+            骑行
+          </button>
+          <button
+            className={`btn ${routeMode === 'walking' ? 'primary' : ''}`}
+            onClick={() => setRouteMode('walking')}
+          >
+            徒步
+          </button>
+          <button
+            className={`btn ${!editSnapToRoad ? 'primary' : ''}`}
+            onClick={() => setEditSnapToRoad((v) => !v)}
+            title="贴路重规划或直线连接必经点"
+          >
+            {editSnapToRoad ? '贴路' : '直线'}
+          </button>
+          {editSnapToRoad && (
+            <select
+              className="select-input"
+              style={{ background: '#1e293b', color: '#fff', borderColor: '#475569', padding: '3px 6px', fontSize: 12 }}
+              value={routeProvider}
+              onChange={(e) => setRouteProvider(e.target.value as RouteProvider)}
+            >
+              <option value="auto">自动源</option>
+              <option value="amap">高德</option>
+              <option value="osrm">OSRM</option>
+            </select>
+          )}
+          <span>
+            {detourViaPoints.length === 0
+              ? `点击地图或标注点添加必经点（总长 ${formatDistance(lineLengthMeters(editingLineCoords))}）`
+              : editRerouting
+                ? '正在局部换路...'
+                : editRouteError
+                  ? `换路失败：${editRouteError}`
+                  : `已加 ${detourViaPoints.length} 个必经点 · 拖动 S/E 可调换路范围 · 预览总长 ${formatDistance(lineLengthMeters(mergedPreview))}`}
+          </span>
+          {detourWindow && detourPreviewCoords && !editRerouting && (
+            <button
+              className="btn primary"
+              onClick={() => {
+                setEditingLineCoords(mergedPreview);
+                setDetourViaPoints([]);
+                setDetourWindow(null);
+                setDetourManualRange(false);
+                setDetourPreviewCoords(null);
+              }}
+            >
+              应用换路
+            </button>
+          )}
+          {detourViaPoints.length > 0 && (
+            <button
+              className="btn"
+              onClick={() => {
+                setDetourViaPoints([]);
+                setDetourWindow(null);
+                setDetourManualRange(false);
+                setDetourPreviewCoords(null);
+              }}
+            >
+              重选
+            </button>
+          )}
+          <button
+            className="btn primary"
+            disabled={editRerouting}
+            onClick={() => onSaveEditedLine(editingLineFeatureId, mergedPreview)}
+          >
+            保存路线
+          </button>
+          <button className="btn" onClick={onCancelEditLine}>
+            取消
+          </button>
+        </div>
+      );
+    }
+
     if (tool === 'select') return null;
     if (tool === 'point') {
       return (
@@ -1041,6 +1534,12 @@ export function MapCanvas({
       return (
         <div className="draw-banner">
           <button
+            className={`btn ${routeMode === 'driving' ? 'primary' : ''}`}
+            onClick={() => setRouteMode('driving')}
+          >
+            驾车
+          </button>
+          <button
             className={`btn ${routeMode === 'bicycling' ? 'primary' : ''}`}
             onClick={() => setRouteMode('bicycling')}
           >
@@ -1052,11 +1551,29 @@ export function MapCanvas({
           >
             徒步
           </button>
+          <button
+            className={`btn ${defaultSegMode === 'direct' ? 'primary' : ''}`}
+            onClick={() => setDefaultSegMode((m) => (m === 'auto' ? 'direct' : 'auto'))}
+            title="新添加路段的默认方式：贴路规划或自由直线（也可点每段中点单独切换）"
+          >
+            {defaultSegMode === 'direct' ? '新段: 直线' : '新段: 贴路'}
+          </button>
+          <select
+            className="select-input"
+            style={{ background: '#1e293b', color: '#fff', borderColor: '#475569', padding: '3px 6px', fontSize: 12 }}
+            value={routeProvider}
+            onChange={(e) => setRouteProvider(e.target.value as RouteProvider)}
+            title="切换路径规划数据源"
+          >
+            <option value="auto">自动源</option>
+            <option value="amap">高德</option>
+            <option value="osrm">OSRM(绿道/野路)</option>
+          </select>
           <span>
             {draftCoords.length < 2
               ? draftCoords.length === 0
-                ? '点击地图或已有标注点选择起点'
-                : '继续点击地图或已有标注点选择终点'
+                ? '点击地图或标注点选起点'
+                : '点终点（可拖拽途经点、点路线插点）'
               : routeLoading
                 ? '正在规划路线...'
                 : routeError
@@ -1071,9 +1588,10 @@ export function MapCanvas({
               onClick={() => {
                 setDraftCoords((prev) => prev.slice(0, -1));
                 setDraftNames((prev) => prev.slice(0, -1));
+                setRouteSegmentModes((prev) => prev.slice(0, -1));
               }}
             >
-              撤销一点
+              撤销
             </button>
           )}
           {canEdit && routeResult && (
@@ -1083,10 +1601,11 @@ export function MapCanvas({
                 onSaveRoute(routeResult, draftNames);
                 setDraftCoords([]);
                 setDraftNames([]);
+                setRouteSegmentModes([]);
                 setRouteResult(null);
               }}
             >
-              保存为路线
+              保存路线
             </button>
           )}
           {draftCoords.length > 0 && (
@@ -1095,6 +1614,7 @@ export function MapCanvas({
               onClick={() => {
                 setDraftCoords([]);
                 setDraftNames([]);
+                setRouteSegmentModes([]);
                 setRouteResult(null);
                 setRouteError('');
               }}
