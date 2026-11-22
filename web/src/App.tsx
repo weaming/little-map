@@ -16,7 +16,7 @@ import { MapCanvas } from './components/MapCanvas';
 import { ShareModal } from './components/ShareModal';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
-import { geometryCenter, getCurrentPositionWgs84 } from './map/geo';
+import { geometryBounds, geometryCenter, getCurrentPositionWgs84, type WgsBounds } from './map/geo';
 import type {
   BasemapId,
   DrawTool,
@@ -135,7 +135,13 @@ export function App() {
   const [showShare, setShowShare] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toast, setToast] = useState<{ text: string; isConflict?: boolean } | null>(null);
-  const [flyTarget, setFlyTarget] = useState<{ lng: number; lat: number; zoom?: number; seq: number } | null>(null);
+  const [flyTarget, setFlyTarget] = useState<{
+    lng: number;
+    lat: number;
+    zoom?: number;
+    bounds?: WgsBounds;
+    seq: number;
+  } | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -403,16 +409,20 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [canEdit, selectedFeatureId, handleDeleteFeature]);
 
-  async function handleAddPlaceMarker(place: PlaceResult) {
+  async function handleAddPlaceMarker(place: PlaceResult, asPolygon = false) {
     if (!mapMeta || !canEdit) return;
+    const useBoundary = asPolygon && Boolean(place.boundary);
+    const geometry: GeoGeometry = useBoundary
+      ? place.boundary!
+      : { type: 'Point', coordinates: [place.lng, place.lat] };
     try {
       const resp = await upsertFeatures(mapMeta.id, editToken, mapMeta.revision, [
         {
           title: place.name,
           description: place.address,
           category: place.category ?? '',
-          color: '#dc2626',
-          geometry: { type: 'Point', coordinates: [place.lng, place.lat] },
+          color: useBoundary ? '#2563eb' : '#dc2626',
+          geometry,
           visible: true,
         },
       ]);
@@ -420,9 +430,12 @@ export function App() {
       setFeatures((prev) => [...prev, ...resp.features]);
       if (resp.features[0]) {
         setSelectedFeatureId(resp.features[0].id);
+        const bounds = geometryBounds(resp.features[0].geometry) ?? undefined;
+        const [lng, lat] = geometryCenter(resp.features[0].geometry);
+        setFlyTarget({ lng, lat, bounds, seq: Date.now() });
       }
       etagRef.current = undefined;
-      notify(`已添加「${place.name}」`);
+      notify(useBoundary ? `已按范围标注「${place.name}」` : `已添加「${place.name}」`);
     } catch (err) {
       const { message, isConflict } = extractErrorMessage(err);
       notify(message, isConflict);
@@ -477,7 +490,8 @@ export function App() {
     const target = features.find((f) => f.id === id);
     if (target) {
       const [lng, lat] = geometryCenter(target.geometry);
-      setFlyTarget({ lng, lat, seq: Date.now() });
+      const bounds = geometryBounds(target.geometry) ?? undefined;
+      setFlyTarget({ lng, lat, bounds, seq: Date.now() });
     }
   }
 
@@ -593,7 +607,7 @@ export function App() {
             onRefresh={() => void syncMap(true)}
             onSelectFeature={handleSelectFromSidebar}
             onToggleVisible={(f) => void handleSaveFeature({ ...f, visible: !f.visible })}
-            onFlyTo={(lng, lat, zoom) => setFlyTarget({ lng, lat, zoom, seq: Date.now() })}
+            onFlyTo={(lng, lat, zoom, bounds) => setFlyTarget({ lng, lat, zoom, bounds, seq: Date.now() })}
             onAddPlaceMarker={handleAddPlaceMarker}
           />
 

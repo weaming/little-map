@@ -269,6 +269,70 @@ export function geometryCenter(geom: GeoGeometry): [number, number] {
   return [sum[0] / pts.length, sum[1] / pts.length];
 }
 
+export type WgsBounds = [[number, number], [number, number]];
+
+export function geometryBounds(geom: GeoGeometry): WgsBounds | null {
+  if (geom.type === 'Point') return null;
+  const pts =
+    geom.type === 'LineString'
+      ? (geom.coordinates as number[][])
+      : ((geom.coordinates as number[][][])[0] ?? []);
+  if (pts.length === 0) return null;
+
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  for (const [lng, lat] of pts) {
+    if (lng < minLng) minLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lng > maxLng) maxLng = lng;
+    if (lat > maxLat) maxLat = lat;
+  }
+  if (!Number.isFinite(minLng) || !Number.isFinite(minLat)) return null;
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
+}
+
+// 射线法判断点是否在多边形环内部。
+export function isPointInRing(lng: number, lat: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect = yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// 判断当前视口矩形（WGS-84）是否完全落入多边形内部。
+export function isViewportInsidePolygon(viewport: WgsBounds | null, ring: number[][]): boolean {
+  if (!viewport || ring.length < 3) return false;
+  const [[minLng, minLat], [maxLng, maxLat]] = viewport;
+
+  // 若多边形有任意顶点落在视口内，说明视口可见边界，并非完全在内部
+  for (const [lng, lat] of ring) {
+    if (lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat) {
+      return false;
+    }
+  }
+
+  // 视口四角与中心点全部在多边形内
+  const corners: [number, number][] = [
+    [minLng, minLat],
+    [maxLng, minLat],
+    [maxLng, maxLat],
+    [minLng, maxLat],
+    [(minLng + maxLng) / 2, (minLat + maxLat) / 2],
+  ];
+  return corners.every(([lng, lat]) => isPointInRing(lng, lat, ring));
+}
+
 export function getCurrentPositionWgs84(timeoutMs = 3000): Promise<[number, number] | null> {
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
     return Promise.resolve(null);

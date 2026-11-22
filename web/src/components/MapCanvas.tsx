@@ -9,9 +9,11 @@ import {
   formatDistance,
   geometryToDisplay,
   haversineMeters,
+  isViewportInsidePolygon,
   lineLengthMeters,
   polygonAreaSqMeters,
   wgs84ToDisplay,
+  type WgsBounds,
 } from '../map/geo';
 import type { BasemapId, DrawTool, GeoGeometry, MapFeature, OverlayId } from '../types/map';
 
@@ -23,7 +25,13 @@ interface MapCanvasProps {
   features: MapFeature[];
   selectedFeatureId: string | null;
   tool: DrawTool;
-  flyTarget: { lng: number; lat: number; zoom?: number; seq: number } | null;
+  flyTarget: {
+    lng: number;
+    lat: number;
+    zoom?: number;
+    bounds?: [[number, number], [number, number]];
+    seq: number;
+  } | null;
   userLocation: [number, number] | null;
   onSelectFeature: (id: string | null) => void;
   onCreateGeometry: (geometry: GeoGeometry) => void;
@@ -170,11 +178,21 @@ function buildFeatureCollection(
   features: MapFeature[],
   basemap: BasemapId,
   selectedId: string | null,
+  viewport: WgsBounds | null,
 ): GeoJSON.FeatureCollection {
   return {
     type: 'FeatureCollection',
     features: features
-      .filter((f) => f.visible)
+      .filter((f) => {
+        if (!f.visible) return false;
+        if (f.geometry.type === 'Polygon') {
+          const ring = (f.geometry.coordinates as number[][][])[0] ?? [];
+          if (isViewportInsidePolygon(viewport, ring)) {
+            return false;
+          }
+        }
+        return true;
+      })
       .map((f) => ({
         type: 'Feature',
         id: f.id,
@@ -268,12 +286,14 @@ export function MapCanvas({
   const [draftCoords, setDraftCoords] = useState<[number, number][]>([]);
   const [hoverCoord, setHoverCoord] = useState<[number, number] | null>(null);
   const [measureFrozen, setMeasureFrozen] = useState(false);
+  const [viewportBounds, setViewportBounds] = useState<WgsBounds | null>(null);
 
   const latestRef = useRef({
     basemap,
     overlay,
     features,
     selectedFeatureId,
+    viewportBounds,
     tool,
     draftCoords,
     hoverCoord,
@@ -287,6 +307,7 @@ export function MapCanvas({
     overlay,
     features,
     selectedFeatureId,
+    viewportBounds,
     tool,
     draftCoords,
     hoverCoord,
@@ -297,13 +318,19 @@ export function MapCanvas({
   };
 
   function ensureVectorLayers(map: maplibregl.Map) {
-    const { features: curFeatures, basemap: curBasemap, selectedFeatureId: curSel, draftCoords: curDraft, tool: curTool } =
-      latestRef.current;
+    const {
+      features: curFeatures,
+      basemap: curBasemap,
+      selectedFeatureId: curSel,
+      viewportBounds: curViewport,
+      draftCoords: curDraft,
+      tool: curTool,
+    } = latestRef.current;
 
     if (!map.getSource(FEATURES_SOURCE)) {
       map.addSource(FEATURES_SOURCE, {
         type: 'geojson',
-        data: buildFeatureCollection(curFeatures, curBasemap, curSel),
+        data: buildFeatureCollection(curFeatures, curBasemap, curSel, curViewport),
       });
 
       map.addLayer({
@@ -390,9 +417,17 @@ export function MapCanvas({
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
     mapRef.current = map;
 
+    const updateViewportBounds = () => {
+      const b = map.getBounds();
+      const sw = displayToWgs84(b.getWest(), b.getSouth(), latestRef.current.basemap);
+      const ne = displayToWgs84(b.getEast(), b.getNorth(), latestRef.current.basemap);
+      setViewportBounds([sw, ne]);
+    };
+
     map.on('style.load', () => {
       ensureVectorLayers(map);
       syncOverlayLayer(map, latestRef.current.basemap, latestRef.current.overlay);
+      updateViewportBounds();
     });
 
     map.on('click', (ev) => {
@@ -463,6 +498,7 @@ export function MapCanvas({
     });
 
     map.on('moveend', () => {
+      updateViewportBounds();
       const cb = latestRef.current.onViewChange;
       if (!cb) return;
       const center = map.getCenter();
@@ -553,7 +589,7 @@ export function MapCanvas({
 
     const src = map.getSource(FEATURES_SOURCE) as maplibregl.GeoJSONSource | undefined;
     if (src) {
-      src.setData(buildFeatureCollection(features, basemap, selectedFeatureId));
+      src.setData(buildFeatureCollection(features, basemap, selectedFeatureId, viewportBounds));
     }
 
     for (const marker of markersRef.current.values()) {
@@ -609,7 +645,7 @@ export function MapCanvas({
         .addTo(map);
       markersRef.current.set(f.id, marker);
     }
-  }, [features, basemap, selectedFeatureId]);
+  }, [features, basemap, selectedFeatureId, viewportBounds]);
 
   // 同步绘制/测距草图图层与图形上的分段距离/面积标签
   useEffect(() => {
@@ -679,11 +715,26 @@ export function MapCanvas({
     draftLabelsRef.current = nextLabels;
   }, [draftCoords, hoverCoord, measureFrozen, tool, basemap]);
 
-  // 飞行定位到目标 WGS-84 坐标（仅在 flyTarget 变化时触发，切底图不重新飞转）
+  // 飞行定位到目标 WGS-84 坐标或外接包围盒（仅在 flyTarget 变化时触发，切底图不重新飞转）
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !flyTarget) return;
-    const target = wgs84ToDisplay(flyTarget.lng, flyTarget.lat, latestRef.current.basemap);
+    const curBasemap = latestRef.current.basemap;
+
+    if (flyTarget.bounds) {
+      const sw = wgs84ToDisplay(flyTarget.bounds[0][0], flyTarget.bounds[0][1], curBasemap);
+      const ne = wgs84ToDisplay(flyTarget.bounds[1][0], flyTarget.bounds[1][1], curBasemap);
+      const containerW = map.getContainer().clientWidth;
+      const sidePad = containerW > 1100 ? 370 : Math.min(80, Math.round(containerW * 0.12));
+      map.fitBounds([sw, ne], {
+        padding: { top: 96, bottom: 72, left: sidePad, right: sidePad },
+        maxZoom: 16,
+        duration: 700,
+      });
+      return;
+    }
+
+    const target = wgs84ToDisplay(flyTarget.lng, flyTarget.lat, curBasemap);
     map.flyTo({ center: target, zoom: flyTarget.zoom ?? Math.max(map.getZoom(), 14), duration: 700 });
   }, [flyTarget]);
 

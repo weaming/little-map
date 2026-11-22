@@ -4,6 +4,7 @@ import {
   formatArea,
   formatDistance,
   gcj02ToWgs84,
+  isViewportInsidePolygon,
   lineLengthMeters,
   lngLatToWorldPx,
   polygonAreaSqMeters,
@@ -67,5 +68,44 @@ describe('geo utilities', () => {
     const [nyPx, nyPy] = lngLatToWorldPx(-73.9857, 40.7484, 14);
     const specNY = computeAlignedTileSpec(14, Math.floor(nyPx / 256), Math.floor(nyPy / 256), 'wgs84', 'gcj02');
     expect(specNY.isIdentity).toBe(true);
+  });
+
+  test('viewport inside polygon detection', () => {
+    const bigSquare = [
+      [116.0, 39.0],
+      [117.0, 39.0],
+      [117.0, 40.0],
+      [116.0, 40.0],
+      [116.0, 39.0],
+    ];
+    expect(
+      isViewportInsidePolygon(
+        [
+          [116.2, 39.2],
+          [116.8, 39.8],
+        ],
+        bigSquare,
+      ),
+    ).toBe(true);
+    // 跨越边界
+    expect(
+      isViewportInsidePolygon(
+        [
+          [116.5, 39.5],
+          [117.2, 39.8],
+        ],
+        bigSquare,
+      ),
+    ).toBe(false);
+    // 完全包住多边形
+    expect(
+      isViewportInsidePolygon(
+        [
+          [115.0, 38.0],
+          [118.0, 41.0],
+        ],
+        bigSquare,
+      ),
+    ).toBe(false);
   });
 });

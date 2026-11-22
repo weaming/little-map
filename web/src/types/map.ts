@@ -46,6 +46,7 @@ export interface PlaceResult {
   lat: number;
   provider: string;
   category?: string;
+  boundary?: GeoGeometry;
 }
 
 export interface ServerCapabilities {

@@ -12,7 +12,7 @@ import {
   Spline,
 } from 'lucide-react';
 import { searchPlaces } from '../api/client';
-import { formatArea, formatDistance, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
+import { formatArea, formatDistance, geometryBounds, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
 import type { MapFeature, MapMeta, PlaceResult } from '../types/map';
 
 interface SidebarProps {
@@ -26,8 +26,8 @@ interface SidebarProps {
   onRefresh: () => void;
   onSelectFeature: (id: string) => void;
   onToggleVisible: (feature: MapFeature) => void;
-  onFlyTo: (lng: number, lat: number, zoom?: number) => void;
-  onAddPlaceMarker: (place: PlaceResult) => void;
+  onFlyTo: (lng: number, lat: number, zoom?: number, bounds?: [[number, number], [number, number]]) => void;
+  onAddPlaceMarker: (place: PlaceResult, asPolygon?: boolean) => void;
 }
 
 export function Sidebar({
@@ -185,25 +185,65 @@ export function Sidebar({
               <div
                 key={`${place.lng}-${place.lat}-${idx}`}
                 className="search-item"
-                onClick={() => onFlyTo(place.lng, place.lat, 15)}
+                onClick={() => {
+                  const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
+                  onFlyTo(place.lng, place.lat, 15, bounds);
+                }}
               >
                 <div style={{ minWidth: 0 }}>
-                  <div className="search-item-title">{place.name}</div>
+                  <div className="search-item-title">
+                    {place.name}
+                    {place.boundary && (
+                      <span className="badge editable" style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px' }}>
+                        含范围
+                      </span>
+                    )}
+                  </div>
                   <div className="search-item-addr">{place.address || place.provider}</div>
                 </div>
                 {canEdit && (
-                  <button
-                    className="btn outline"
-                    style={{ padding: '3px 7px', fontSize: 12 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAddPlaceMarker(place);
-                    }}
-                    title="添加为点标注"
-                  >
-                    <Plus size={13} />
-                    标注
-                  </button>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    {place.boundary ? (
+                      <>
+                        <button
+                          className="btn primary"
+                          style={{ padding: '3px 7px', fontSize: 12 }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAddPlaceMarker(place, true);
+                          }}
+                          title="按区域范围标注为多边形"
+                        >
+                          <Pentagon size={12} />
+                          标范围
+                        </button>
+                        <button
+                          className="btn outline"
+                          style={{ padding: '3px 6px', fontSize: 12 }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAddPlaceMarker(place, false);
+                          }}
+                          title="仅添加中心点标注"
+                        >
+                          <MapPin size={12} />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="btn outline"
+                        style={{ padding: '3px 7px', fontSize: 12 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAddPlaceMarker(place, false);
+                        }}
+                        title="添加为点标注"
+                      >
+                        <Plus size={13} />
+                        标注
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
