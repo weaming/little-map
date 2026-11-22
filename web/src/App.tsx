@@ -124,10 +124,33 @@ function loadRecentMaps(): RecentMapItem[] {
   }
 }
 
-function saveRecentMap(item: RecentMapItem) {
+function saveRecentMap(item: RecentMapItem): RecentMapItem[] {
   const list = loadRecentMaps().filter((x) => x.id !== item.id);
   list.unshift(item);
-  localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(list.slice(0, 50)));
+  const sliced = list.slice(0, 50);
+  localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(sliced));
+  return sliced;
+}
+
+function removeRecentMapStorage(id: string): RecentMapItem[] {
+  const next = loadRecentMaps().filter((x) => x.id !== id);
+  localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next));
+  try {
+    localStorage.removeItem(VIEW_STORAGE_PREFIX + id);
+    localStorage.removeItem(OVERLAY_STORAGE_PREFIX + id);
+  } catch {
+    // 忽略存储清理异常
+  }
+  return next;
+}
+
+function pruneRecentMapsByValidIds(validIds: Set<string>): RecentMapItem[] {
+  const cur = loadRecentMaps();
+  const next = cur.filter((x) => validIds.has(x.id));
+  if (next.length !== cur.length) {
+    localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(next));
+  }
+  return next;
 }
 
 export function App() {
@@ -145,6 +168,7 @@ export function App() {
   const [adminKey, setAdminKey] = useState(() => localStorage.getItem(ADMIN_KEY_STORAGE) ?? '');
   const [adminInput, setAdminInput] = useState('');
   const [adminMaps, setAdminMaps] = useState<AdminMapSummary[] | null>(null);
+  const [recentMaps, setRecentMaps] = useState<RecentMapItem[]>(() => loadRecentMaps());
   const [adminError, setAdminError] = useState('');
   const [adminLoading, setAdminLoading] = useState(false);
 
@@ -217,6 +241,7 @@ export function App() {
       localStorage.setItem(ADMIN_KEY_STORAGE, trimmed);
       setAdminKey(trimmed);
       setAdminMaps(list);
+      setRecentMaps(pruneRecentMapsByValidIds(new Set(list.map((m) => m.id))));
     } catch (err) {
       setAdminMaps(null);
       setAdminError(extractErrorMessage(err).message);
@@ -270,14 +295,27 @@ export function App() {
               }
             }
           }
-          saveRecentMap({
-            id: res.snapshot.map.id,
-            title: res.snapshot.map.title,
-            editToken: res.snapshot.can_edit ? editToken : '',
-          });
+          setRecentMaps(
+            saveRecentMap({
+              id: res.snapshot.map.id,
+              title: res.snapshot.map.title,
+              editToken: res.snapshot.can_edit ? editToken : '',
+            }),
+          );
         }
       } catch (err) {
-        const { message } = extractErrorMessage(err);
+        const { message, isNotFound } = extractErrorMessage(err);
+        if (isNotFound) {
+          setRecentMaps(removeRecentMapStorage(mapId));
+          window.history.replaceState({}, '', '/');
+          setMapId('');
+          setEditToken('');
+          setMapMeta(null);
+          setFeatures([]);
+          setSelectedFeatureId(null);
+          notify('该地图不存在或已被删除，已从最近访问中移除');
+          return;
+        }
         notify(`加载地图失败：${message}`);
       } finally {
         setIsSyncing(false);
@@ -322,7 +360,7 @@ export function App() {
       setCanEdit(true);
       setBasemap(resp.map.basemap);
       setSelectedFeatureId(null);
-      saveRecentMap({ id: resp.map.id, title: resp.map.title, editToken: resp.edit_token });
+      setRecentMaps(saveRecentMap({ id: resp.map.id, title: resp.map.title, editToken: resp.edit_token }));
       notify('已创建新地图，可点击右上角「分享」获取链接');
     } catch (err) {
       notify(`创建失败：${extractErrorMessage(err).message}`);
@@ -342,7 +380,7 @@ export function App() {
       setEditToken(resp.edit_token);
       setSelectedFeatureId(null);
       setSearchPreview(null);
-      saveRecentMap({ id: resp.map.id, title: resp.map.title, editToken: resp.edit_token });
+      setRecentMaps(saveRecentMap({ id: resp.map.id, title: resp.map.title, editToken: resp.edit_token }));
       notify(`已复制为「${resp.map.title}」，现在可自由编辑`);
     } catch (err) {
       notify(`复制失败：${extractErrorMessage(err).message}`);
@@ -365,7 +403,7 @@ export function App() {
       const updated = await updateMapMeta(mapMeta.id, editToken, mapMeta.revision, { title });
       setMapMeta(updated);
       etagRef.current = undefined;
-      saveRecentMap({ id: updated.id, title: updated.title, editToken });
+      setRecentMaps(saveRecentMap({ id: updated.id, title: updated.title, editToken }));
     } catch (err) {
       const { message, isConflict } = extractErrorMessage(err);
       notify(message, isConflict);
@@ -707,7 +745,6 @@ export function App() {
 
   // 无 mapId 时展示欢迎页
   if (!mapId) {
-    const recents = loadRecentMaps();
     return (
       <div className="welcome-screen">
         <div className="welcome-card">
@@ -734,25 +771,36 @@ export function App() {
             </button>
           </form>
 
-          {recents.length > 0 && (
+          {recentMaps.length > 0 && (
             <div style={{ marginTop: 22 }}>
               <div className="field-label">最近访问（本浏览器）</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
-                {recents.map((item) => (
-                  <button
-                    key={item.id}
-                    className="btn outline"
-                    style={{ justifyContent: 'space-between' }}
-                    onClick={() => {
-                      const url = item.editToken
-                        ? `/?m=${encodeURIComponent(item.id)}&t=${encodeURIComponent(item.editToken)}`
-                        : `/?m=${encodeURIComponent(item.id)}`;
-                      window.location.href = url;
-                    }}
-                  >
-                    <span>{item.title}</span>
-                    <span className="badge">{item.editToken ? '可编辑' : '只读'}</span>
-                  </button>
+                {recentMaps.map((item) => (
+                  <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      className="btn outline"
+                      style={{ flex: 1, minWidth: 0, justifyContent: 'space-between' }}
+                      onClick={() => {
+                        const url = item.editToken
+                          ? `/?m=${encodeURIComponent(item.id)}&t=${encodeURIComponent(item.editToken)}`
+                          : `/?m=${encodeURIComponent(item.id)}`;
+                        window.location.href = url;
+                      }}
+                    >
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {item.title}
+                      </span>
+                      <span className="badge">{item.editToken ? '可编辑' : '只读'}</span>
+                    </button>
+                    <button
+                      className="btn"
+                      style={{ padding: '4px 7px', color: '#94a3b8' }}
+                      title="从最近访问移除"
+                      onClick={() => setRecentMaps(removeRecentMapStorage(item.id))}
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -835,6 +883,7 @@ export function App() {
                           try {
                             await deleteAdminMap(adminKey, m.id);
                             setAdminMaps((prev) => (prev ? prev.filter((x) => x.id !== m.id) : prev));
+                            setRecentMaps(removeRecentMapStorage(m.id));
                           } catch (err) {
                             setAdminError(extractErrorMessage(err).message);
                           }

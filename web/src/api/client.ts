@@ -230,17 +230,21 @@ export function getExportUrl(mapId: string): string {
   return `/api/maps/${encodeURIComponent(mapId)}/export.geojson`;
 }
 
-export function extractErrorMessage(err: unknown): { message: string; isConflict: boolean } {
+export function extractErrorMessage(err: unknown): { message: string; isConflict: boolean; isNotFound: boolean } {
   if (axios.isAxiosError(err)) {
-    const isConflict = err.response?.status === 409;
+    const status = err.response?.status;
+    const isConflict = status === 409;
+    const isNotFound = status === 404;
     const serverMsg = (err.response?.data as { error?: string } | undefined)?.error;
     return {
       message: serverMsg || err.message || '请求失败',
       isConflict,
+      isNotFound,
     };
   }
   return {
     message: err instanceof Error ? err.message : '未知错误',
     isConflict: false,
+    isNotFound: false,
   };
 }
