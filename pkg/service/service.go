@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"beike-mcp/beike"
 
 	"little-map/pkg/config"
 	"little-map/pkg/geo"
@@ -21,9 +24,12 @@ var ErrInvalidInput = errors.New("invalid input")
 
 // Service 聚合地图、标注与搜索的核心业务逻辑，供 REST API 与 MCP 共用。
 type Service struct {
-	store      *store.Store
-	cfg        *config.Config
-	httpClient *http.Client
+	store       *store.Store
+	cfg         *config.Config
+	httpClient  *http.Client
+	beikeOnce   sync.Once
+	beikeClient *beike.Client
+	beikeSem    chan struct{}
 }
 
 // New 创建业务服务实例。
@@ -32,6 +38,7 @@ func New(st *store.Store, cfg *config.Config) *Service {
 		store:      st,
 		cfg:        cfg,
 		httpClient: cfg.NewHTTPClient(10 * time.Second),
+		beikeSem:   make(chan struct{}, 1),
 	}
 }
 
@@ -264,6 +271,7 @@ func (s *Service) Capabilities() map[string]any {
 		"has_amap_key":     s.cfg.AmapKey != "",
 		"has_google_key":   s.cfg.GoogleMapsKey != "",
 		"has_admin_key":    s.cfg.AdminKey != "",
+		"has_beike":        true,
 	}
 }
 

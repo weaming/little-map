@@ -2,6 +2,10 @@ import axios from 'axios';
 import type {
   AdminMapSummary,
   BasemapId,
+  BeikeCity,
+  BeikeRegion,
+  BeikeSearchParams,
+  BeikeSearchResult,
   GeoGeometry,
   MapFeature,
   MapMeta,
@@ -225,6 +229,29 @@ export interface BypassRequest {
 
 export async function findHighwayBypassAnchors(req: BypassRequest): Promise<BypassResult> {
   const { data } = await http.post<BypassResult>('/route/bypass', req, { timeout: 25000 });
+  return data;
+}
+
+export async function fetchBeikeCities(q = ''): Promise<BeikeCity[]> {
+  const { data } = await http.get<{ cities: BeikeCity[] }>('/beike/cities', {
+    params: q ? { q } : undefined,
+  });
+  return data.cities ?? [];
+}
+
+export async function fetchBeikeRegions(
+  city: string,
+  type: 'region' | 'metro',
+  q = '',
+): Promise<{ city_id: string; regions: BeikeRegion[] }> {
+  const { data } = await http.get<{ city_id: string; regions: BeikeRegion[] }>('/beike/regions', {
+    params: { city, type, ...(q ? { q } : {}) },
+  });
+  return { city_id: data.city_id, regions: data.regions ?? [] };
+}
+
+export async function searchBeikeRent(params: BeikeSearchParams): Promise<BeikeSearchResult> {
+  const { data } = await http.post<BeikeSearchResult>('/beike/search', params, { timeout: 30000 });
   return data;
 }
 

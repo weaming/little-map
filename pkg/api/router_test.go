@@ -248,3 +248,21 @@ func TestCloneMap(t *testing.T) {
 		t.Fatalf("expected cloned map to include copied feature, body = %s", getResp.Body.String())
 	}
 }
+
+func TestBeikeCitiesAndRegions(t *testing.T) {
+	router := setupTestRouter(t)
+
+	citiesReq := httptest.NewRequest(http.MethodGet, "/api/beike/cities?q=北京", nil)
+	citiesResp := httptest.NewRecorder()
+	router.ServeHTTP(citiesResp, citiesReq)
+	if citiesResp.Code != http.StatusOK || !bytes.Contains(citiesResp.Body.Bytes(), []byte("110000")) {
+		t.Fatalf("expected beijing in beike cities, code=%d body=%s", citiesResp.Code, citiesResp.Body.String())
+	}
+
+	regReq := httptest.NewRequest(http.MethodGet, "/api/beike/regions?city=110000&type=metro", nil)
+	regResp := httptest.NewRecorder()
+	router.ServeHTTP(regResp, regReq)
+	if regResp.Code != http.StatusOK || !bytes.Contains(regResp.Body.Bytes(), []byte("1号线")) {
+		t.Fatalf("expected metro lines for beijing, code=%d body=%s", regResp.Code, regResp.Body.String())
+	}
+}

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  Clock,
   Eye,
   EyeOff,
   MapPin,
@@ -14,7 +15,37 @@ import {
 } from 'lucide-react';
 import { searchPlaces, type SearchPlaceOptions } from '../api/client';
 import { formatArea, formatDistance, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
-import type { MapFeature, MapMeta, PlaceResult } from '../types/map';
+import type {
+  BeikeCluster,
+  BeikeHouse,
+  BeikeSearchResult,
+  MapFeature,
+  MapMeta,
+  PlaceResult,
+} from '../types/map';
+import { BeikePanel } from './BeikePanel';
+
+const POI_HISTORY_KEY = 'little_map_poi_search_history_v1';
+const MAX_POI_HISTORY = 20;
+
+function loadPoiHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(POI_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePoiHistory(list: string[]) {
+  try {
+    localStorage.setItem(POI_HISTORY_KEY, JSON.stringify(list.slice(0, MAX_POI_HISTORY)));
+  } catch {
+    // 忽略存储异常
+  }
+}
 
 interface SidebarProps {
   mapMeta: MapMeta;
@@ -22,9 +53,28 @@ interface SidebarProps {
   selectedFeatureId: string | null;
   canEdit: boolean;
   isSyncing: boolean;
+  hasBeike: boolean;
+  hasAmapKey: boolean;
   searchProviders: string[];
   searchResults: PlaceResult[];
   activeSearchIndex: number | null;
+  beikeHouses: BeikeHouse[];
+  beikeClusters: BeikeCluster[];
+  beikeMeta: Omit<BeikeSearchResult, 'houses'> | null;
+  activeBeikeClusterKey: string | null;
+  beikeViewportOnly: boolean;
+  beikeKeyword: string;
+  beikeBizcircles: string[];
+  beikeCopyWithPhotos: boolean;
+  onBeikeViewportOnlyChange: (next: boolean) => void;
+  onBeikeKeywordChange: (next: string) => void;
+  onBeikeBizcirclesChange: (next: string[]) => void;
+  onBeikeCopyWithPhotosChange: (next: boolean) => void;
+  onBeikeCopyCSV: (houses: BeikeHouse[]) => void;
+  onBeikeResultsReplace: (res: BeikeSearchResult) => void;
+  onBeikeResultsAppend: (res: BeikeSearchResult) => void;
+  onBeikeClear: () => void;
+  onSelectBeikeCluster: (key: string) => void;
   getSearchOptions: () => SearchPlaceOptions;
   onRenameMap: (title: string) => void;
   onRefresh: () => void;
@@ -42,9 +92,28 @@ export function Sidebar({
   selectedFeatureId,
   canEdit,
   isSyncing,
+  hasBeike,
+  hasAmapKey,
   searchProviders,
   searchResults,
   activeSearchIndex,
+  beikeHouses,
+  beikeClusters,
+  beikeMeta,
+  activeBeikeClusterKey,
+  beikeViewportOnly,
+  beikeKeyword,
+  beikeBizcircles,
+  beikeCopyWithPhotos,
+  onBeikeViewportOnlyChange,
+  onBeikeKeywordChange,
+  onBeikeBizcirclesChange,
+  onBeikeCopyWithPhotosChange,
+  onBeikeCopyCSV,
+  onBeikeResultsReplace,
+  onBeikeResultsAppend,
+  onBeikeClear,
+  onSelectBeikeCluster,
   getSearchOptions,
   onRenameMap,
   onRefresh,
@@ -58,6 +127,7 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= 768 : false,
   );
+  const [activeTab, setActiveTab] = useState<'features' | 'beike'>('features');
   const [titleDraft, setTitleDraft] = useState(mapMeta.title);
   const [filterText, setFilterText] = useState('');
 
@@ -65,10 +135,32 @@ export function Sidebar({
   const [provider, setProvider] = useState('auto');
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => loadPoiHistory());
 
   // 当远端刷新标题时同步输入框
   if (titleDraft !== mapMeta.title && document.activeElement?.getAttribute('data-role') !== 'map-title') {
     setTitleDraft(mapMeta.title);
+  }
+
+  function recordSearchHistory(term: string) {
+    setSearchHistory((prev) => {
+      const next = [term, ...prev.filter((x) => x !== term)].slice(0, MAX_POI_HISTORY);
+      savePoiHistory(next);
+      return next;
+    });
+  }
+
+  function removeHistoryItem(term: string) {
+    setSearchHistory((prev) => {
+      const next = prev.filter((x) => x !== term);
+      savePoiHistory(next);
+      return next;
+    });
+  }
+
+  function clearHistory() {
+    setSearchHistory([]);
+    savePoiHistory([]);
   }
 
   function handleClearSearch() {
@@ -77,13 +169,13 @@ export function Sidebar({
     onClearSearch();
   }
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = query.trim();
+  async function runPoiSearch(rawQuery: string) {
+    const trimmed = rawQuery.trim();
     if (!trimmed) {
       handleClearSearch();
       return;
     }
+    recordSearchHistory(trimmed);
     setSearching(true);
     setSearchError('');
     try {
@@ -98,6 +190,11 @@ export function Sidebar({
     } finally {
       setSearching(false);
     }
+  }
+
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    await runPoiSearch(query);
   }
 
   function featureSummary(f: MapFeature): string {
@@ -182,10 +279,59 @@ export function Sidebar({
         </button>
       </div>
 
+      {hasBeike && (
+        <div className="sidebar-tabs">
+          <button
+            type="button"
+            className={`sidebar-tab ${activeTab === 'features' ? 'active' : ''}`}
+            onClick={() => setActiveTab('features')}
+          >
+            标注与搜索 ({features.length})
+          </button>
+          <button
+            type="button"
+            className={`sidebar-tab ${activeTab === 'beike' ? 'active' : ''}`}
+            onClick={() => setActiveTab('beike')}
+          >
+            贝壳找房{beikeHouses.length > 0 ? ` (${beikeHouses.length})` : ''}
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'beike' && hasBeike ? (
+        <BeikePanel
+          houses={beikeHouses}
+          clusters={beikeClusters}
+          meta={beikeMeta}
+          activeClusterKey={activeBeikeClusterKey}
+          viewportOnly={beikeViewportOnly}
+          localKeyword={beikeKeyword}
+          selectedBizcircles={beikeBizcircles}
+          copyWithPhotos={beikeCopyWithPhotos}
+          hasAmapKey={hasAmapKey}
+          getViewportCenter={() => getSearchOptions().center ?? [mapMeta.center_lng, mapMeta.center_lat]}
+          onViewportOnlyChange={onBeikeViewportOnlyChange}
+          onLocalKeywordChange={onBeikeKeywordChange}
+          onSelectedBizcirclesChange={onBeikeBizcirclesChange}
+          onCopyWithPhotosChange={onBeikeCopyWithPhotosChange}
+          onCopyCSV={onBeikeCopyCSV}
+          onResultsReplace={onBeikeResultsReplace}
+          onResultsAppend={onBeikeResultsAppend}
+          onClear={onBeikeClear}
+          onSelectCluster={(key) => {
+            onSelectBeikeCluster(key);
+            if (window.innerWidth <= 768) {
+              setCollapsed(true);
+            }
+          }}
+        />
+      ) : (
+        <>
       <div className="sidebar-section">
         <form onSubmit={handleSearch} className="search-row">
           <div className="search-input-wrap">
             <input
+              list="poi-search-history-list"
               className="text-input"
               placeholder="搜索当前视图或附近 POI..."
               value={query}
@@ -198,6 +344,11 @@ export function Sidebar({
                 }
               }}
             />
+            <datalist id="poi-search-history-list">
+              {searchHistory.map((item) => (
+                <option key={item} value={item} />
+              ))}
+            </datalist>
             {(query.length > 0 || searchResults.length > 0) && (
               <button
                 type="button"
@@ -231,6 +382,51 @@ export function Sidebar({
         </form>
 
         {searchError && <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6 }}>{searchError}</div>}
+
+        {searchResults.length === 0 && searchHistory.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div className="search-results-header" style={{ marginTop: 0, marginBottom: 5 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <Clock size={11} />
+                最近搜索 ({searchHistory.length})
+              </span>
+              <button
+                type="button"
+                className="btn"
+                style={{ padding: '1px 5px', fontSize: 11 }}
+                onClick={clearHistory}
+              >
+                清空
+              </button>
+            </div>
+            <div className="beike-presets">
+              {searchHistory.map((item) => (
+                <span
+                  key={item}
+                  className="beike-preset-pill"
+                  onClick={() => {
+                    setQuery(item);
+                    void runPoiSearch(item);
+                  }}
+                  title={`再次搜索「${item}」`}
+                >
+                  <span className="beike-preset-name">{item}</span>
+                  <button
+                    type="button"
+                    className="beike-preset-del"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeHistoryItem(item);
+                    }}
+                    title="移除该记录"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {searchResults.length > 0 && (
           <>
@@ -371,6 +567,8 @@ export function Sidebar({
           ))
         )}
       </div>
+        </>
+      )}
     </aside>
   );
 }

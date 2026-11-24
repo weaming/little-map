@@ -38,3 +38,11 @@ func TestValidateGeometry(t *testing.T) {
 		t.Fatalf("expected out-of-range point to fail")
 	}
 }
+
+func TestBD09ToWGS84(t *testing.T) {
+	// 北京天安门附近 BD-09 -> WGS-84 应明显纠偏且落回预期范围
+	wLng, wLat := BD09ToWGS84(116.403874, 39.914889)
+	if math.Abs(wLng-116.3912) > 0.002 || math.Abs(wLat-39.9062) > 0.002 {
+		t.Fatalf("unexpected BD09->WGS84 conversion: got (%f, %f)", wLng, wLat)
+	}
+}

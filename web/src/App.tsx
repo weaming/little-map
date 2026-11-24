@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   cloneMap,
   createMap,
@@ -15,6 +15,7 @@ import {
   upsertFeatures,
   type FeaturePayload,
 } from './api/client';
+import { BeikeClusterCard } from './components/BeikeClusterCard';
 import { FeatureInspector } from './components/FeatureInspector';
 import { MapCanvas } from './components/MapCanvas';
 import { PlaceDetailCard } from './components/PlaceDetailCard';
@@ -22,7 +23,9 @@ import { ShareModal } from './components/ShareModal';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import {
+  clusterBeikeHouses,
   featuresViewport,
+  formatBeikeHousesCSV,
   formatDistance,
   geometryBounds,
   geometryCenter,
@@ -34,6 +37,8 @@ import {
 import type {
   AdminMapSummary,
   BasemapId,
+  BeikeHouse,
+  BeikeSearchResult,
   DrawTool,
   GeoGeometry,
   MapFeature,
@@ -203,6 +208,14 @@ export function App() {
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [activeSearchIndex, setActiveSearchIndex] = useState<number | null>(null);
+  const [beikeHouses, setBeikeHouses] = useState<BeikeHouse[]>([]);
+  const [beikeMeta, setBeikeMeta] = useState<Omit<BeikeSearchResult, 'houses'> | null>(null);
+  const [activeBeikeClusterKey, setActiveBeikeClusterKey] = useState<string | null>(null);
+  const [beikeViewportOnly, setBeikeViewportOnly] = useState(false);
+  const [beikeKeyword, setBeikeKeyword] = useState('');
+  const [beikeBizcircles, setBeikeBizcircles] = useState<string[]>([]);
+  const [beikeCopyWithPhotos, setBeikeCopyWithPhotos] = useState(false);
+  const [currentViewportBounds, setCurrentViewportBounds] = useState<WgsBounds | null>(null);
   const [externalWaypoint, setExternalWaypoint] = useState<{
     coord: [number, number];
     name?: string;
@@ -708,6 +721,74 @@ export function App() {
     }
   }
 
+  const beikeClusters = useMemo(
+    () =>
+      clusterBeikeHouses(
+        beikeHouses,
+        beikeViewportOnly ? currentViewportBounds : null,
+        beikeKeyword,
+        beikeBizcircles,
+      ),
+    [beikeHouses, beikeViewportOnly, currentViewportBounds, beikeKeyword, beikeBizcircles],
+  );
+
+  async function handleCopyBeikeCSV(houses: BeikeHouse[]) {
+    if (houses.length === 0) {
+      notify('当前没有可复制的房源');
+      return;
+    }
+    const csv = formatBeikeHousesCSV(houses, beikeCopyWithPhotos);
+    try {
+      await navigator.clipboard.writeText(csv);
+      notify(`已复制 ${houses.length} 套房源 CSV${beikeCopyWithPhotos ? '（含图片URL）' : '（不含图片）'}`);
+    } catch {
+      notify('复制失败，请检查浏览器剪贴板权限');
+    }
+  }
+
+  async function handleSaveBeikeHouse(house: BeikeHouse) {
+    if (!mapMeta || !canEdit) return;
+    const rentLabel = house.rent_type === 'whole' ? '整租' : house.rent_type === 'shared' ? '合租' : '';
+    const descLines: string[] = [
+      `- 租金：¥${house.price_text}${house.price_unit || '元/月'}`,
+      `- 小区：${[house.district, house.bizcircle, house.resblock].filter(Boolean).join(' · ')}`,
+    ];
+    const spec = [rentLabel, house.layout, house.area > 0 ? `${house.area}㎡` : '', house.orientation]
+      .filter(Boolean)
+      .join(' · ');
+    if (spec) descLines.push(`- 户型：${spec}`);
+    if (house.subway_desc || house.subway_name) {
+      descLines.push(`- 地铁：${house.subway_desc || house.subway_name}`);
+    }
+    if (house.tags.length > 0) {
+      descLines.push(`- 标签：${house.tags.join(' / ')}`);
+    }
+    descLines.push(`- 房源编号：${house.house_code}`);
+    if (house.pic_url) {
+      descLines.push('', `![${house.title}](${house.pic_url})`);
+    }
+
+    try {
+      const resp = await upsertFeatures(mapMeta.id, editToken, mapMeta.revision, [
+        {
+          title: `${house.resblock || house.title} ¥${house.price_text}`,
+          description: descLines.join('\n'),
+          category: '租房候选',
+          color: '#059669',
+          geometry: { type: 'Point', coordinates: [house.lng, house.lat] },
+          visible: true,
+        },
+      ]);
+      setMapMeta((prev) => (prev ? { ...prev, revision: resp.revision } : prev));
+      setFeatures((prev) => [...prev, ...resp.features]);
+      etagRef.current = undefined;
+      notify(`已收藏「${house.resblock || house.title}」到当前地图`);
+    } catch (err) {
+      const { message, isConflict } = extractErrorMessage(err);
+      notify(message, isConflict);
+    }
+  }
+
   async function handleImportGeoJSON(file: File) {
     if (!mapMeta || !canEdit) return;
     try {
@@ -927,6 +1008,7 @@ export function App() {
   }
 
   const selectedFeature = features.find((f) => f.id === selectedFeatureId) ?? null;
+  const activeBeikeCluster = beikeClusters.find((c) => c.key === activeBeikeClusterKey) ?? null;
   const savedView = mapMeta ? loadSavedView(mapMeta.id) : null;
 
   return (
@@ -946,6 +1028,8 @@ export function App() {
             editingLineFeatureId={editingLineFeatureId}
             searchResults={searchResults}
             activeSearchIndex={activeSearchIndex}
+            beikeClusters={beikeClusters}
+            activeBeikeClusterKey={activeBeikeClusterKey}
             trafficOverlay={trafficOverlay?.segments ?? null}
             tool={tool}
             flyTarget={flyTarget}
@@ -956,14 +1040,21 @@ export function App() {
               if (id !== editingLineFeatureId) setEditingLineFeatureId(null);
               if (id !== trafficOverlay?.featureId) setTrafficOverlay(null);
               setActiveSearchIndex(null);
+              setActiveBeikeClusterKey(null);
             }}
             onSelectSearchResult={(idx) => {
               const place = searchResults[idx];
               if (!place) return;
               setSelectedFeatureId(null);
+              setActiveBeikeClusterKey(null);
               setActiveSearchIndex(idx);
-              const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
-              setFlyTarget({ lng: place.lng, lat: place.lat, zoom: 15, bounds, seq: Date.now() });
+            }}
+            onSelectBeikeCluster={(key) => {
+              const target = beikeClusters.find((c) => c.key === key);
+              if (!target) return;
+              setSelectedFeatureId(null);
+              setActiveSearchIndex(null);
+              setActiveBeikeClusterKey(key);
             }}
             onCreateGeometry={handleCreateGeometry}
             onSaveRoute={(route, names) => void handleSaveRoute(route, names)}
@@ -982,6 +1073,7 @@ export function App() {
             onViewChange={(view) => saveView(mapMeta.id, view)}
             onViewportChange={(vp) => {
               currentViewportRef.current = vp;
+              setCurrentViewportBounds(vp.bounds);
             }}
           />
 
@@ -1025,9 +1117,78 @@ export function App() {
             selectedFeatureId={selectedFeatureId}
             canEdit={canEdit}
             isSyncing={isSyncing}
+            hasBeike={Boolean(capabilities.has_beike)}
+            hasAmapKey={capabilities.has_amap_key}
             searchProviders={capabilities.search_providers}
             searchResults={searchResults}
             activeSearchIndex={activeSearchIndex}
+            beikeHouses={beikeHouses}
+            beikeClusters={beikeClusters}
+            beikeMeta={beikeMeta}
+            activeBeikeClusterKey={activeBeikeClusterKey}
+            beikeViewportOnly={beikeViewportOnly}
+            beikeKeyword={beikeKeyword}
+            beikeBizcircles={beikeBizcircles}
+            beikeCopyWithPhotos={beikeCopyWithPhotos}
+            onBeikeViewportOnlyChange={setBeikeViewportOnly}
+            onBeikeKeywordChange={setBeikeKeyword}
+            onBeikeBizcirclesChange={setBeikeBizcircles}
+            onBeikeCopyWithPhotosChange={setBeikeCopyWithPhotos}
+            onBeikeCopyCSV={(houses) => void handleCopyBeikeCSV(houses)}
+            onBeikeResultsReplace={(res) => {
+              const { houses, ...rest } = res;
+              setBeikeHouses(houses);
+              setBeikeMeta(rest);
+              setActiveBeikeClusterKey(null);
+              setBeikeBizcircles([]);
+              const vp = placesViewport(houses);
+              if (vp) {
+                setFlyTarget({
+                  lng: vp.center[0],
+                  lat: vp.center[1],
+                  zoom: vp.bounds ? undefined : 14,
+                  bounds: vp.bounds,
+                  seq: Date.now(),
+                });
+              }
+            }}
+            onBeikeResultsAppend={(res) => {
+              const { houses, ...rest } = res;
+              setBeikeMeta(rest);
+              const seen = new Set(beikeHouses.map((h) => h.house_code));
+              const merged = [...beikeHouses];
+              let added = 0;
+              for (const h of houses) {
+                if (!seen.has(h.house_code)) {
+                  seen.add(h.house_code);
+                  merged.push(h);
+                  added++;
+                }
+              }
+              setBeikeHouses(merged);
+              if (added > 0) {
+                notify(`已加载更多：新增 ${added} 套房源（共 ${merged.length} 套）`);
+              } else if (res.scanned > 0) {
+                notify(`已扫描 ${res.scanned} 套，当前条件下无新增房源`);
+              } else {
+                notify(res.notes?.[0] || '本页未返回新房源，可能已到末尾或触发限流');
+              }
+            }}
+            onBeikeClear={() => {
+              setBeikeHouses([]);
+              setBeikeMeta(null);
+              setActiveBeikeClusterKey(null);
+              setBeikeKeyword('');
+              setBeikeBizcircles([]);
+            }}
+            onSelectBeikeCluster={(key) => {
+              const target = beikeClusters.find((c) => c.key === key);
+              if (!target) return;
+              setSelectedFeatureId(null);
+              setActiveSearchIndex(null);
+              setActiveBeikeClusterKey(key);
+              setFlyTarget({ lng: target.lng, lat: target.lat, seq: Date.now() });
+            }}
             getSearchOptions={() => ({
               center:
                 currentViewportRef.current?.center ??
@@ -1063,7 +1224,7 @@ export function App() {
               setSelectedFeatureId(null);
               setActiveSearchIndex(idx);
               const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
-              setFlyTarget({ lng: place.lng, lat: place.lat, zoom: 15, bounds, seq: Date.now() });
+              setFlyTarget({ lng: place.lng, lat: place.lat, bounds, seq: Date.now() });
             }}
             onAddPlaceMarker={handleAddPlaceMarker}
           />
@@ -1093,6 +1254,16 @@ export function App() {
                 setTrafficOverlay(null);
                 setSelectedFeatureId(null);
               }}
+            />
+          ) : activeBeikeCluster ? (
+            <BeikeClusterCard
+              cluster={activeBeikeCluster}
+              canEdit={canEdit}
+              copyWithPhotos={beikeCopyWithPhotos}
+              onCopyWithPhotosChange={setBeikeCopyWithPhotos}
+              onCopyCSV={(houses) => void handleCopyBeikeCSV(houses)}
+              onSaveHouse={(h) => void handleSaveBeikeHouse(h)}
+              onClose={() => setActiveBeikeClusterKey(null)}
             />
           ) : (
             activeSearchIndex !== null &&

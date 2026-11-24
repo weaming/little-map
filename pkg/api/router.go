@@ -41,6 +41,9 @@ func NewRouter(svc *service.Service, mcpHandler http.Handler, webFS fs.FS) *gin.
 		group.POST("/route", handlePlanRoute(svc))
 		group.POST("/route/bypass", handleRouteBypass(svc))
 		group.GET("/tile-proxy", handleTileProxy(svc))
+		group.GET("/beike/cities", handleBeikeCities(svc))
+		group.GET("/beike/regions", handleBeikeRegions(svc))
+		group.POST("/beike/search", handleBeikeSearch(svc))
 		group.GET("/admin/maps", handleAdminListMaps(svc))
 		group.DELETE("/admin/maps/:id", handleAdminDeleteMap(svc))
 	}
@@ -331,6 +334,47 @@ func handleTileProxy(svc *service.Service) gin.HandlerFunc {
 			c.Header("Cache-Control", "public, max-age=86400")
 		}
 		c.Data(http.StatusOK, contentType, data)
+	}
+}
+
+func handleBeikeCities(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cities := svc.ListBeikeCities(c.Query("q"))
+		c.JSON(http.StatusOK, gin.H{"cities": cities})
+	}
+}
+
+func handleBeikeRegions(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		city := c.Query("city")
+		if city == "" {
+			city = c.Query("city_id")
+		}
+		regions, cityID, err := svc.ListBeikeRegions(city, c.Query("type"), c.Query("q"))
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"city_id": cityID,
+			"regions": regions,
+		})
+	}
+}
+
+func handleBeikeSearch(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var in service.BeikeSearchInput
+		if err := c.ShouldBindJSON(&in); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		res, err := svc.SearchBeikeRent(c.Request.Context(), in)
+		if err != nil {
+			writeServiceError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, res)
 	}
 }
 

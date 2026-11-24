@@ -10,6 +10,7 @@ import (
 const (
 	gcjAxis = 6378245.0
 	gcjEE   = 0.00669342162296594323
+	bdXPi   = math.Pi * 3000.0 / 180.0
 )
 
 // Geometry 表示标准 WGS-84 GeoJSON 几何对象。
@@ -100,6 +101,27 @@ func GCJ02ToWGS84(lng, lat float64) (float64, float64) {
 		wLat += lat - gLat
 	}
 	return wLng, wLat
+}
+
+// BD09ToGCJ02 将百度 BD-09 坐标转换为 GCJ-02 坐标。
+func BD09ToGCJ02(lng, lat float64) (float64, float64) {
+	if isOutOfChina(lng, lat) {
+		return lng, lat
+	}
+	x := lng - 0.0065
+	y := lat - 0.006
+	z := math.Hypot(x, y) - 0.00002*math.Sin(y*bdXPi)
+	theta := math.Atan2(y, x) - 0.000003*math.Cos(x*bdXPi)
+	return z * math.Cos(theta), z * math.Sin(theta)
+}
+
+// BD09ToWGS84 将百度 BD-09 坐标（如贝壳/链家小区坐标）转换为标准 WGS-84 坐标。
+func BD09ToWGS84(lng, lat float64) (float64, float64) {
+	if isOutOfChina(lng, lat) {
+		return lng, lat
+	}
+	gLng, gLat := BD09ToGCJ02(lng, lat)
+	return GCJ02ToWGS84(gLng, gLat)
 }
 
 func isOutOfChina(lng, lat float64) bool {

@@ -64,6 +64,89 @@ export interface ServerCapabilities {
   has_amap_key: boolean;
   has_google_key: boolean;
   has_admin_key: boolean;
+  has_beike?: boolean;
+}
+
+export interface BeikeCity {
+  id: string;
+  name: string;
+  abbr: string;
+}
+
+export interface BeikeRegion {
+  token: string;
+  name: string;
+}
+
+export interface BeikeHouse {
+  house_code: string;
+  title: string;
+  price: number;
+  price_text: string;
+  price_unit: string;
+  lng: number;
+  lat: number;
+  layout: string;
+  area: number;
+  bedrooms: number;
+  bathrooms: number;
+  orientation: string;
+  floor_total: number;
+  district: string;
+  bizcircle: string;
+  resblock: string;
+  subway_desc: string;
+  subway_name: string;
+  rent_type: 'whole' | 'shared' | 'other';
+  tags: string[];
+  pic_url?: string;
+  pic_thumb_url?: string;
+}
+
+export interface BeikeSearchParams {
+  city: string;
+  price_min?: number;
+  price_max?: number;
+  rooms?: number;
+  rent_type?: 'any' | 'whole' | 'shared';
+  district?: string;
+  region?: string;
+  metro_line?: string;
+  area?: string;
+  move_in?: string;
+  floor?: string;
+  brand?: string;
+  features?: string[];
+  sort?: string;
+  pages?: number;
+  start_page?: number;
+  no_cache?: boolean;
+}
+
+export interface BeikeSearchResult {
+  city_id: string;
+  total: number;
+  count: number;
+  scanned: number;
+  unique: number;
+  requests: number;
+  partial: boolean;
+  next_page?: number;
+  remaining_pages?: number;
+  notes?: string[];
+  houses: BeikeHouse[];
+}
+
+export interface BeikeCluster {
+  key: string;
+  resblock: string;
+  district: string;
+  bizcircle: string;
+  lng: number;
+  lat: number;
+  minPrice: number;
+  maxPrice: number;
+  houses: BeikeHouse[];
 }
 
 export interface AdminMapSummary {

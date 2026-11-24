@@ -25,6 +25,7 @@ import {
 } from '../map/geo';
 import type {
   BasemapId,
+  BeikeCluster,
   DrawTool,
   GeoGeometry,
   MapFeature,
@@ -49,6 +50,8 @@ interface MapCanvasProps {
   editingLineFeatureId: string | null;
   searchResults: PlaceResult[];
   activeSearchIndex: number | null;
+  beikeClusters: BeikeCluster[];
+  activeBeikeClusterKey: string | null;
   trafficOverlay: TrafficSegment[] | null;
   tool: DrawTool;
   flyTarget: {
@@ -62,6 +65,7 @@ interface MapCanvasProps {
   externalWaypoint?: { coord: [number, number]; name?: string; seq: number } | null;
   onSelectFeature: (id: string | null) => void;
   onSelectSearchResult?: (index: number) => void;
+  onSelectBeikeCluster?: (key: string) => void;
   onCreateGeometry: (geometry: GeoGeometry) => void;
   onSaveRoute: (route: RouteResult, waypointNames: string[]) => void;
   onSaveEditedLine: (featureId: string, coords: [number, number][]) => void;
@@ -500,6 +504,8 @@ export function MapCanvas({
   editingLineFeatureId,
   searchResults,
   activeSearchIndex,
+  beikeClusters,
+  activeBeikeClusterKey,
   trafficOverlay,
   tool,
   flyTarget,
@@ -507,6 +513,7 @@ export function MapCanvas({
   externalWaypoint,
   onSelectFeature,
   onSelectSearchResult,
+  onSelectBeikeCluster,
   onCreateGeometry,
   onSaveRoute,
   onSaveEditedLine,
@@ -522,6 +529,7 @@ export function MapCanvas({
   const editLineMarkersRef = useRef<maplibregl.Marker[]>([]);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const searchMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const beikeMarkersRef = useRef<maplibregl.Marker[]>([]);
   const labelEntriesRef = useRef<{
     features: Array<{
       id: string;
@@ -541,13 +549,26 @@ export function MapCanvas({
       pinRadius: number;
       priority: number;
     }>;
-  }>({ features: [], search: [] });
+    beike: Array<{
+      id: string;
+      marker: maplibregl.Marker;
+      tagEl: HTMLElement | null;
+      displayCoord: [number, number];
+      labelText: string;
+      pinRadius: number;
+      priority: number;
+    }>;
+  }>({ features: [], search: [], beike: [] });
   const prevBasemapRef = useRef<BasemapId>(basemap);
   const routeReqSeqRef = useRef(0);
 
   function relayoutMapLabels(map: maplibregl.Map | null) {
     if (!map) return;
-    const allEntries = [...labelEntriesRef.current.search, ...labelEntriesRef.current.features];
+    const allEntries = [
+      ...labelEntriesRef.current.search,
+      ...labelEntriesRef.current.beike,
+      ...labelEntriesRef.current.features,
+    ];
     if (allEntries.length === 0) return;
 
     const layoutItems: LabelLayoutItem[] = allEntries.map((entry) => {
@@ -643,6 +664,7 @@ export function MapCanvas({
     measureFrozen,
     onSelectFeature,
     onSelectSearchResult,
+    onSelectBeikeCluster,
     onCreateGeometry,
     onViewChange,
     onViewportChange,
@@ -673,6 +695,7 @@ export function MapCanvas({
     measureFrozen,
     onSelectFeature,
     onSelectSearchResult,
+    onSelectBeikeCluster,
     onCreateGeometry,
     onViewChange,
     onViewportChange,
@@ -1236,6 +1259,10 @@ export function MapCanvas({
         m.remove();
       }
       searchMarkersRef.current = [];
+      for (const m of beikeMarkersRef.current) {
+        m.remove();
+      }
+      beikeMarkersRef.current = [];
       map.remove();
       mapRef.current = null;
     };
@@ -2183,6 +2210,104 @@ export function MapCanvas({
     labelEntriesRef.current.search = searchLabelEntries;
     relayoutMapLabels(map);
   }, [searchResults, activeSearchIndex, basemap]);
+
+  // 渲染贝壳找房小区聚合气泡（带价格与套数，纳入统一防重叠排布）
+  useEffect(() => {
+    const map = mapRef.current;
+    for (const m of beikeMarkersRef.current) {
+      m.remove();
+    }
+    beikeMarkersRef.current = [];
+    if (!map) return;
+
+    if (beikeClusters.length === 0) {
+      labelEntriesRef.current.beike = [];
+      relayoutMapLabels(map);
+      return;
+    }
+
+    const nextMarkers: maplibregl.Marker[] = [];
+    const beikeLabelEntries: typeof labelEntriesRef.current.beike = [];
+    beikeClusters.forEach((cluster, idx) => {
+      const isActive = cluster.key === activeBeikeClusterKey;
+      const pinSize = isActive ? 22 : 18;
+
+      const el = document.createElement('div');
+      el.style.position = 'relative';
+      el.style.width = '0px';
+      el.style.height = '0px';
+      el.style.cursor = 'pointer';
+      el.style.userSelect = 'none';
+      el.style.zIndex = isActive ? '16' : '6';
+
+      const priceText = cluster.minPrice > 0 ? `¥${Math.round(cluster.minPrice)}起` : '面议';
+      const labelText = `${cluster.resblock} · ${priceText} (${cluster.houses.length}套)`;
+
+      const tag = document.createElement('div');
+      tag.textContent = labelText;
+      tag.style.position = 'absolute';
+      tag.style.background = isActive ? '#047857' : 'rgba(236, 253, 245, 0.96)';
+      tag.style.color = isActive ? '#ffffff' : '#065f46';
+      tag.style.border = isActive ? '1px solid #047857' : '1px solid rgba(5, 150, 105, 0.45)';
+      tag.style.padding = isActive ? '3px 8px' : '2px 7px';
+      tag.style.borderRadius = '999px';
+      tag.style.fontSize = isActive ? '12px' : '11px';
+      tag.style.fontWeight = '600';
+      tag.style.boxShadow = isActive
+        ? '0 2px 10px rgba(4, 120, 87, 0.42)'
+        : '0 1px 4px rgba(15, 23, 42, 0.16)';
+      tag.style.whiteSpace = 'nowrap';
+      tag.style.maxWidth = '210px';
+      tag.style.overflow = 'hidden';
+      tag.style.textOverflow = 'ellipsis';
+      el.appendChild(tag);
+
+      const pin = document.createElement('span');
+      pin.textContent = String(cluster.houses.length);
+      pin.style.position = 'absolute';
+      pin.style.left = `${-pinSize / 2}px`;
+      pin.style.top = `${-pinSize / 2}px`;
+      pin.style.display = 'inline-flex';
+      pin.style.alignItems = 'center';
+      pin.style.justifyContent = 'center';
+      pin.style.width = `${pinSize}px`;
+      pin.style.height = `${pinSize}px`;
+      pin.style.borderRadius = '50%';
+      pin.style.background = isActive ? '#047857' : '#10b981';
+      pin.style.color = '#ffffff';
+      pin.style.fontSize = '11px';
+      pin.style.fontWeight = '700';
+      pin.style.border = isActive ? '3px solid #ffffff' : '2px solid #ffffff';
+      pin.style.boxShadow = isActive
+        ? '0 0 0 6px rgba(16, 185, 129, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35)'
+        : '0 2px 5px rgba(0, 0, 0, 0.26)';
+      el.appendChild(pin);
+
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        latestRef.current.onSelectBeikeCluster?.(cluster.key);
+      });
+
+      const displayCoord = wgs84ToDisplay(cluster.lng, cluster.lat, basemap);
+      const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+        .setLngLat(displayCoord)
+        .addTo(map);
+      nextMarkers.push(marker);
+      beikeLabelEntries.push({
+        id: `beike:${cluster.key}`,
+        marker,
+        tagEl: tag,
+        displayCoord,
+        labelText,
+        pinRadius: pinSize / 2,
+        priority: isActive ? 0 : 40 + idx,
+      });
+    });
+
+    beikeMarkersRef.current = nextMarkers;
+    labelEntriesRef.current.beike = beikeLabelEntries;
+    relayoutMapLabels(map);
+  }, [beikeClusters, activeBeikeClusterKey, basemap]);
 
   // 渲染已保存路线的按需实时路况叠层
   useEffect(() => {

@@ -2,12 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import {
   bd09ToGcj02,
   bd09ToMercator,
+  clusterBeikeHouses,
   computeAlignedTileSpec,
   computeBaiduAlignedTileSpec,
   computeDetourWindow,
   computeLabelPlacements,
   featuresViewport,
   formatArea,
+  formatBeikeHousesCSV,
   formatDistance,
   gcj02ToBd09,
   gcj02ToWgs84,
@@ -268,5 +270,116 @@ describe('geo utilities', () => {
         expect(overlapX > 0 && overlapY > 0).toBe(false);
       }
     }
+  });
+
+  test('clusterBeikeHouses groups same resblock and filters by viewport', () => {
+    const sample = [
+      {
+        house_code: 'BJ1',
+        title: '望京新城 1居',
+        price: 4200,
+        price_text: '4200',
+        price_unit: '元/月',
+        lng: 116.48,
+        lat: 40.0,
+        layout: '1室1厅',
+        area: 50,
+        bedrooms: 1,
+        bathrooms: 1,
+        orientation: '南',
+        floor_total: 18,
+        district: '朝阳',
+        bizcircle: '望京',
+        resblock: '望京新城',
+        subway_desc: '',
+        subway_name: '',
+        rent_type: 'whole' as const,
+        tags: [],
+      },
+      {
+        house_code: 'BJ2',
+        title: '望京新城 2居',
+        price: 3800,
+        price_text: '3800',
+        price_unit: '元/月',
+        lng: 116.48,
+        lat: 40.0,
+        layout: '2室1厅',
+        area: 70,
+        bedrooms: 2,
+        bathrooms: 1,
+        orientation: '南北',
+        floor_total: 18,
+        district: '朝阳',
+        bizcircle: '望京',
+        resblock: '望京新城',
+        subway_desc: '',
+        subway_name: '',
+        rent_type: 'whole' as const,
+        tags: [],
+      },
+      {
+        house_code: 'BJ3',
+        title: '回龙观 1居',
+        price: 3000,
+        price_text: '3000',
+        price_unit: '元/月',
+        lng: 116.33,
+        lat: 40.07,
+        layout: '1室1厅',
+        area: 45,
+        bedrooms: 1,
+        bathrooms: 1,
+        orientation: '南',
+        floor_total: 6,
+        district: '昌平',
+        bizcircle: '回龙观',
+        resblock: '龙跃苑',
+        subway_desc: '',
+        subway_name: '',
+        rent_type: 'whole' as const,
+        tags: [],
+      },
+    ];
+
+    const all = clusterBeikeHouses(sample);
+    expect(all.length).toBe(2);
+    expect(all[0].resblock).toBe('龙跃苑');
+    expect(all[1].resblock).toBe('望京新城');
+    expect(all[1].houses.length).toBe(2);
+    expect(all[1].minPrice).toBe(3800);
+    expect(all[1].maxPrice).toBe(4200);
+
+    const inView = clusterBeikeHouses(sample, [
+      [116.45, 39.98],
+      [116.52, 40.02],
+    ]);
+    expect(inView.length).toBe(1);
+    expect(inView[0].resblock).toBe('望京新城');
+
+    const byKw = clusterBeikeHouses(sample, null, '望京 南北');
+    expect(byKw.length).toBe(1);
+    expect(byKw[0].houses.length).toBe(1);
+    expect(byKw[0].houses[0].house_code).toBe('BJ2');
+
+    // 多选商圈为 OR 关系，且可与关键词 AND 组合
+    const byBizOr = clusterBeikeHouses(sample, null, '', ['望京', '回龙观']);
+    expect(byBizOr.length).toBe(2);
+    const byBizAndKw = clusterBeikeHouses(sample, null, '1室1厅', ['望京', '回龙观']);
+    expect(byBizAndKw.length).toBe(2);
+    expect(byBizAndKw.reduce((acc, c) => acc + c.houses.length, 0)).toBe(2);
+
+    // CSV 导出：默认不含图片列、不含 house_code；开启含图后图片 URL 在最后一列
+    const sampleWithPic = [{ ...sample[0], pic_url: 'https://ke-image.ljcdn.com/test.1500x1500.jpg' }];
+    const csvNoPic = formatBeikeHousesCSV(sampleWithPic, false);
+    expect(csvNoPic).not.toContain('BJ1');
+    expect(csvNoPic).not.toContain('图片URL');
+    expect(csvNoPic).toContain('坐标(GCJ02)');
+    expect(csvNoPic).toContain('望京新城 1居');
+
+    const csvWithPic = formatBeikeHousesCSV(sampleWithPic, true);
+    const [headerLine, rowLine] = csvWithPic.split('\n');
+    expect(headerLine.endsWith(',图片URL')).toBe(true);
+    expect(rowLine.endsWith(',https://ke-image.ljcdn.com/test.1500x1500.jpg')).toBe(true);
   });
 });

@@ -3,10 +3,13 @@ module little-map
 go 1.27.3
 
 require (
+	beike-mcp v0.0.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	modernc.org/sqlite v1.62.0
 )
+
+replace beike-mcp => ../ai-box/go/beike-mcp
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect

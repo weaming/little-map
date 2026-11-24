@@ -1,4 +1,4 @@
-import type { BasemapId, GeoGeometry, MapFeature, OverlayId, PlaceResult, RouteMode } from '../types/map';
+import type { BasemapId, BeikeCluster, BeikeHouse, GeoGeometry, MapFeature, OverlayId, PlaceResult, RouteMode } from '../types/map';
 
 const EARTH_RADIUS_M = 6371008.8;
 const GCJ_AXIS = 6378245.0;
@@ -410,6 +410,139 @@ export function placesViewport(
       [maxLng, maxLat],
     ],
   };
+}
+
+// 按小区与坐标将贝壳房源聚合为地图气泡；支持按视口、多选商圈（OR 关系）与关键词/特征标签（AND 关系）实时过滤。
+export function clusterBeikeHouses(
+  houses: BeikeHouse[],
+  viewport?: WgsBounds | null,
+  keyword = '',
+  bizcircles: string[] = [],
+): BeikeCluster[] {
+  const terms = keyword
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const bizSet = bizcircles.length > 0 ? new Set(bizcircles) : null;
+
+  const map = new Map<string, BeikeCluster>();
+  for (const h of houses) {
+    if (!Number.isFinite(h.lng) || !Number.isFinite(h.lat)) continue;
+    if (viewport) {
+      const [[minLng, minLat], [maxLng, maxLat]] = viewport;
+      if (h.lng < minLng || h.lng > maxLng || h.lat < minLat || h.lat > maxLat) {
+        continue;
+      }
+    }
+    if (bizSet && !bizSet.has((h.bizcircle || '').trim())) {
+      continue;
+    }
+    if (terms.length > 0) {
+      const haystack = [
+        h.resblock,
+        h.bizcircle,
+        h.district,
+        h.subway_name,
+        h.subway_desc,
+        h.title,
+        h.layout,
+        h.orientation,
+        ...h.tags,
+      ]
+        .join(' ')
+        .toLowerCase();
+      if (!terms.every((t) => haystack.includes(t))) {
+        continue;
+      }
+    }
+    const name = (h.resblock || h.title || '未命名小区').trim();
+    const key = `${name}@${h.lng.toFixed(4)},${h.lat.toFixed(4)}`;
+    let cluster = map.get(key);
+    if (!cluster) {
+      cluster = {
+        key,
+        resblock: name,
+        district: h.district,
+        bizcircle: h.bizcircle,
+        lng: h.lng,
+        lat: h.lat,
+        minPrice: h.price > 0 ? h.price : Infinity,
+        maxPrice: h.price > 0 ? h.price : 0,
+        houses: [],
+      };
+      map.set(key, cluster);
+    }
+    cluster.houses.push(h);
+    if (h.price > 0) {
+      if (h.price < cluster.minPrice) cluster.minPrice = h.price;
+      if (h.price > cluster.maxPrice) cluster.maxPrice = h.price;
+    }
+  }
+
+  const out = [...map.values()].map((c) => {
+    c.houses.sort((a, b) => (a.price || Infinity) - (b.price || Infinity));
+    if (!Number.isFinite(c.minPrice)) c.minPrice = 0;
+    return c;
+  });
+  out.sort((a, b) => (a.minPrice || Infinity) - (b.minPrice || Infinity));
+  return out;
+}
+
+function escapeCSVCell(val: string): string {
+  if (val.includes(',') || val.includes('"') || val.includes('\n') || val.includes('\r')) {
+    return `"${val.replace(/"/g, '""')}"`;
+  }
+  return val;
+}
+
+// 将贝壳房源列表格式化为标准 CSV（不含房源 ID，适合直接粘贴给 AI；图片 URL 默认不带，开启时置于最后一列）。
+export function formatBeikeHousesCSV(houses: BeikeHouse[], includePhotos = false): string {
+  const headers = [
+    '标题',
+    '小区',
+    '区县',
+    '商圈',
+    '租金',
+    '租赁方式',
+    '户型',
+    '面积(㎡)',
+    '朝向',
+    '总楼层',
+    '地铁',
+    '标签',
+    '坐标(GCJ02)',
+  ];
+  if (includePhotos) {
+    headers.push('图片URL');
+  }
+
+  const lines: string[] = [headers.join(',')];
+  for (const h of houses) {
+    const rentLabel = h.rent_type === 'whole' ? '整租' : h.rent_type === 'shared' ? '合租' : '其他';
+    const priceStr = h.price_text ? `${h.price_text}${h.price_unit || '元/月'}` : '';
+    const [gLng, gLat] = wgs84ToGcj02(h.lng, h.lat);
+    const row = [
+      h.title || '',
+      h.resblock || '',
+      h.district || '',
+      h.bizcircle || '',
+      priceStr,
+      rentLabel,
+      h.layout || '',
+      h.area > 0 ? String(h.area) : '',
+      h.orientation || '',
+      h.floor_total > 0 ? String(h.floor_total) : '',
+      h.subway_desc || h.subway_name || '',
+      h.tags.join('/'),
+      `${gLng.toFixed(6)},${gLat.toFixed(6)}`,
+    ];
+    if (includePhotos) {
+      row.push(h.pic_url || h.pic_thumb_url || '');
+    }
+    lines.push(row.map(escapeCSVCell).join(','));
+  }
+  return lines.join('\n');
 }
 
 export interface LabelLayoutItem {
