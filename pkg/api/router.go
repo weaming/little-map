@@ -217,9 +217,37 @@ func handleSearch(svc *service.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		query := c.Query("q")
 		provider := c.DefaultQuery("provider", "auto")
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "8"))
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-		results, usedProvider, err := svc.SearchPlaces(c.Request.Context(), query, provider, limit)
+		var opts service.SearchOptions
+		if lngStr, latStr := strings.TrimSpace(c.Query("lng")), strings.TrimSpace(c.Query("lat")); lngStr != "" && latStr != "" {
+			if lng, err1 := strconv.ParseFloat(lngStr, 64); err1 == nil {
+				if lat, err2 := strconv.ParseFloat(latStr, 64); err2 == nil {
+					opts.CenterLng = &lng
+					opts.CenterLat = &lat
+				}
+			}
+		}
+		if boundsStr := strings.TrimSpace(c.Query("bounds")); boundsStr != "" {
+			parts := strings.Split(boundsStr, ",")
+			if len(parts) == 4 {
+				var b [4]float64
+				ok := true
+				for i, p := range parts {
+					v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+					if err != nil {
+						ok = false
+						break
+					}
+					b[i] = v
+				}
+				if ok {
+					opts.Bounds = &b
+				}
+			}
+		}
+
+		results, usedProvider, err := svc.SearchPlaces(c.Request.Context(), query, provider, limit, opts)
 		if err != nil {
 			writeServiceError(c, err)
 			return

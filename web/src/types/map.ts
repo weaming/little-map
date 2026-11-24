@@ -40,6 +40,7 @@ export interface MapSnapshot {
 }
 
 export interface PlaceResult {
+  id?: string;
   name: string;
   address: string;
   lng: number;
@@ -47,6 +48,14 @@ export interface PlaceResult {
   provider: string;
   category?: string;
   boundary?: GeoGeometry;
+  tel?: string;
+  open_time?: string;
+  rating?: string;
+  cost?: string;
+  business_area?: string;
+  tags?: string[];
+  photos?: string[];
+  alias?: string;
 }
 
 export interface ServerCapabilities {

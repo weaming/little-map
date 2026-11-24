@@ -10,9 +10,10 @@ import {
   RefreshCw,
   Search,
   Spline,
+  X,
 } from 'lucide-react';
-import { searchPlaces } from '../api/client';
-import { formatArea, formatDistance, geometryBounds, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
+import { searchPlaces, type SearchPlaceOptions } from '../api/client';
+import { formatArea, formatDistance, lineLengthMeters, polygonAreaSqMeters } from '../map/geo';
 import type { MapFeature, MapMeta, PlaceResult } from '../types/map';
 
 interface SidebarProps {
@@ -22,11 +23,16 @@ interface SidebarProps {
   canEdit: boolean;
   isSyncing: boolean;
   searchProviders: string[];
+  searchResults: PlaceResult[];
+  activeSearchIndex: number | null;
+  getSearchOptions: () => SearchPlaceOptions;
   onRenameMap: (title: string) => void;
   onRefresh: () => void;
   onSelectFeature: (id: string) => void;
   onToggleVisible: (feature: MapFeature) => void;
-  onPreviewPlace: (place: PlaceResult, bounds?: [[number, number], [number, number]]) => void;
+  onSearchResults: (results: PlaceResult[]) => void;
+  onClearSearch: () => void;
+  onSelectSearchResult: (index: number) => void;
   onAddPlaceMarker: (place: PlaceResult, asPolygon?: boolean) => void;
 }
 
@@ -37,11 +43,16 @@ export function Sidebar({
   canEdit,
   isSyncing,
   searchProviders,
+  searchResults,
+  activeSearchIndex,
+  getSearchOptions,
   onRenameMap,
   onRefresh,
   onSelectFeature,
   onToggleVisible,
-  onPreviewPlace,
+  onSearchResults,
+  onClearSearch,
+  onSelectSearchResult,
   onAddPlaceMarker,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(() =>
@@ -53,7 +64,6 @@ export function Sidebar({
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState('auto');
   const [searching, setSearching] = useState(false);
-  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [searchError, setSearchError] = useState('');
 
   // 当远端刷新标题时同步输入框
@@ -61,20 +71,30 @@ export function Sidebar({
     setTitleDraft(mapMeta.title);
   }
 
+  function handleClearSearch() {
+    setQuery('');
+    setSearchError('');
+    onClearSearch();
+  }
+
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (!query.trim()) return;
+    const trimmed = query.trim();
+    if (!trimmed) {
+      handleClearSearch();
+      return;
+    }
     setSearching(true);
     setSearchError('');
     try {
-      const resp = await searchPlaces(query.trim(), provider, 8);
-      setSearchResults(resp.results);
+      const resp = await searchPlaces(trimmed, provider, 20, getSearchOptions());
+      onSearchResults(resp.results);
       if (resp.results.length === 0) {
         setSearchError('未找到匹配地点');
       }
     } catch {
       setSearchError('搜索服务暂时不可用');
-      setSearchResults([]);
+      onClearSearch();
     } finally {
       setSearching(false);
     }
@@ -164,12 +184,32 @@ export function Sidebar({
 
       <div className="sidebar-section">
         <form onSubmit={handleSearch} className="search-row">
-          <input
-            className="text-input"
-            placeholder="搜索地点 / POI..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+          <div className="search-input-wrap">
+            <input
+              className="text-input"
+              placeholder="搜索当前视图或附近 POI..."
+              value={query}
+              onChange={(e) => {
+                const next = e.target.value;
+                setQuery(next);
+                if (!next.trim()) {
+                  setSearchError('');
+                  onClearSearch();
+                }
+              }}
+            />
+            {(query.length > 0 || searchResults.length > 0) && (
+              <button
+                type="button"
+                className="search-clear-btn"
+                onClick={handleClearSearch}
+                title="清除搜索"
+                aria-label="清除搜索"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
           {searchProviders.length > 1 && (
             <select
               className="select-input"
@@ -193,30 +233,41 @@ export function Sidebar({
         {searchError && <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6 }}>{searchError}</div>}
 
         {searchResults.length > 0 && (
-          <div className="search-results">
-            {searchResults.map((place, idx) => (
-              <div
-                key={`${place.lng}-${place.lat}-${idx}`}
-                className="search-item"
-                onClick={() => {
-                  const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
-                  onPreviewPlace(place, bounds);
-                  if (window.innerWidth <= 768) {
-                    setCollapsed(true);
-                  }
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div className="search-item-title">
-                    {place.name}
-                    {place.boundary && (
-                      <span className="badge editable" style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px' }}>
-                        含范围
-                      </span>
-                    )}
+          <>
+            <div className="search-results-header">
+              <span>共 {searchResults.length} 个结果（已显示在地图）</span>
+              <button type="button" className="btn" style={{ padding: '2px 6px', fontSize: 11.5 }} onClick={handleClearSearch}>
+                清除结果
+              </button>
+            </div>
+            <div className="search-results">
+              {searchResults.map((place, idx) => (
+                <div
+                  key={`${place.lng}-${place.lat}-${idx}`}
+                  className={`search-item ${idx === activeSearchIndex ? 'active' : ''}`}
+                  onClick={() => {
+                    onSelectSearchResult(idx);
+                    if (window.innerWidth <= 768) {
+                      setCollapsed(true);
+                    }
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, minWidth: 0 }}>
+                    <span className={`search-item-index ${idx === activeSearchIndex ? 'active' : ''}`}>
+                      {idx + 1}
+                    </span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="search-item-title">
+                        {place.name}
+                        {place.boundary && (
+                          <span className="badge editable" style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px' }}>
+                            含范围
+                          </span>
+                        )}
+                      </div>
+                      <div className="search-item-addr">{place.address || place.provider}</div>
+                    </div>
                   </div>
-                  <div className="search-item-addr">{place.address || place.provider}</div>
-                </div>
                 {canEdit && (
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                     {place.boundary ? (
@@ -263,7 +314,8 @@ export function Sidebar({
                 )}
               </div>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </div>
 

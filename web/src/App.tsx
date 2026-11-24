@@ -17,6 +17,7 @@ import {
 } from './api/client';
 import { FeatureInspector } from './components/FeatureInspector';
 import { MapCanvas } from './components/MapCanvas';
+import { PlaceDetailCard } from './components/PlaceDetailCard';
 import { ShareModal } from './components/ShareModal';
 import { Sidebar } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
@@ -27,6 +28,7 @@ import {
   geometryCenter,
   getCurrentPositionWgs84,
   pickDominantColor,
+  placesViewport,
   type WgsBounds,
 } from './map/geo';
 import type {
@@ -199,7 +201,8 @@ export function App() {
     seq: number;
   } | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
-  const [searchPreview, setSearchPreview] = useState<PlaceResult | null>(null);
+  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [activeSearchIndex, setActiveSearchIndex] = useState<number | null>(null);
   const [externalWaypoint, setExternalWaypoint] = useState<{
     coord: [number, number];
     name?: string;
@@ -217,6 +220,7 @@ export function App() {
   const etagRef = useRef<string | undefined>(undefined);
   const autoLocatedMapRef = useRef<string>('');
   const toastTimerRef = useRef<number | undefined>(undefined);
+  const currentViewportRef = useRef<{ center: [number, number]; bounds?: WgsBounds } | null>(null);
 
   const notify = useCallback((text: string, isConflict = false) => {
     setToast({ text, isConflict });
@@ -387,7 +391,8 @@ export function App() {
       setMapId(resp.map.id);
       setEditToken(resp.edit_token);
       setSelectedFeatureId(null);
-      setSearchPreview(null);
+      setSearchResults([]);
+      setActiveSearchIndex(null);
       setRecentMaps(saveRecentMap({ id: resp.map.id, title: resp.map.title, editToken: resp.edit_token }));
       notify(`已复制为「${resp.map.title}」，现在可自由编辑`);
     } catch (err) {
@@ -666,11 +671,21 @@ export function App() {
     const geometry: GeoGeometry = useBoundary
       ? place.boundary!
       : { type: 'Point', coordinates: [place.lng, place.lat] };
+    const descLines: string[] = [];
+    if (place.address) descLines.push(`- 地址：${place.address}`);
+    if (place.open_time) descLines.push(`- 营业时间：${place.open_time}`);
+    if (place.tel) descLines.push(`- 电话：${place.tel}`);
+    if (place.rating || place.cost) {
+      const parts = [place.rating ? `评分 ${place.rating}` : '', place.cost ? `人均 ¥${place.cost}` : ''].filter(Boolean);
+      descLines.push(`- 信息：${parts.join(' · ')}`);
+    }
+    const description = descLines.length > 0 ? descLines.join('\n') : place.address;
+
     try {
       const resp = await upsertFeatures(mapMeta.id, editToken, mapMeta.revision, [
         {
           title: place.name,
-          description: place.address,
+          description,
           category: place.category ?? '',
           color: pickDominantColor(features, geometry.type, useBoundary ? '#2563eb' : '#dc2626'),
           geometry,
@@ -681,7 +696,6 @@ export function App() {
       setFeatures((prev) => [...prev, ...resp.features]);
       if (resp.features[0]) {
         setSelectedFeatureId(resp.features[0].id);
-        setSearchPreview(null);
         const bounds = geometryBounds(resp.features[0].geometry) ?? undefined;
         const [lng, lat] = geometryCenter(resp.features[0].geometry);
         setFlyTarget({ lng, lat, bounds, seq: Date.now() });
@@ -930,7 +944,8 @@ export function App() {
             features={features}
             selectedFeatureId={selectedFeatureId}
             editingLineFeatureId={editingLineFeatureId}
-            searchPreview={searchPreview}
+            searchResults={searchResults}
+            activeSearchIndex={activeSearchIndex}
             trafficOverlay={trafficOverlay?.segments ?? null}
             tool={tool}
             flyTarget={flyTarget}
@@ -940,7 +955,15 @@ export function App() {
               setSelectedFeatureId(id);
               if (id !== editingLineFeatureId) setEditingLineFeatureId(null);
               if (id !== trafficOverlay?.featureId) setTrafficOverlay(null);
-              if (id === null) setSearchPreview(null);
+              setActiveSearchIndex(null);
+            }}
+            onSelectSearchResult={(idx) => {
+              const place = searchResults[idx];
+              if (!place) return;
+              setSelectedFeatureId(null);
+              setActiveSearchIndex(idx);
+              const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
+              setFlyTarget({ lng: place.lng, lat: place.lat, zoom: 15, bounds, seq: Date.now() });
             }}
             onCreateGeometry={handleCreateGeometry}
             onSaveRoute={(route, names) => void handleSaveRoute(route, names)}
@@ -957,6 +980,9 @@ export function App() {
             onCancelEditLine={() => setEditingLineFeatureId(null)}
             onToolCancel={() => setTool('select')}
             onViewChange={(view) => saveView(mapMeta.id, view)}
+            onViewportChange={(vp) => {
+              currentViewportRef.current = vp;
+            }}
           />
 
           <Toolbar
@@ -987,28 +1013,62 @@ export function App() {
               setMapMeta(null);
               setFeatures([]);
               setSelectedFeatureId(null);
+              setSearchResults([]);
+              setActiveSearchIndex(null);
             }}
           />
 
           <Sidebar
+            key={mapMeta.id}
             mapMeta={mapMeta}
             features={features}
             selectedFeatureId={selectedFeatureId}
             canEdit={canEdit}
             isSyncing={isSyncing}
             searchProviders={capabilities.search_providers}
+            searchResults={searchResults}
+            activeSearchIndex={activeSearchIndex}
+            getSearchOptions={() => ({
+              center:
+                currentViewportRef.current?.center ??
+                userLocation ??
+                [mapMeta.center_lng, mapMeta.center_lat],
+              bounds: currentViewportRef.current?.bounds,
+            })}
             onRenameMap={handleRenameMap}
             onRefresh={() => void syncMap(true)}
             onSelectFeature={handleSelectFromSidebar}
             onToggleVisible={(f) => void handleSaveFeature({ ...f, visible: !f.visible })}
-            onPreviewPlace={(place, bounds) => {
-              setSearchPreview(place);
+            onSearchResults={(results) => {
+              setSearchResults(results);
+              setActiveSearchIndex(results.length === 1 ? 0 : null);
+              const vp = placesViewport(results);
+              if (vp) {
+                setFlyTarget({
+                  lng: vp.center[0],
+                  lat: vp.center[1],
+                  zoom: vp.bounds ? undefined : 15,
+                  bounds: vp.bounds,
+                  seq: Date.now(),
+                });
+              }
+            }}
+            onClearSearch={() => {
+              setSearchResults([]);
+              setActiveSearchIndex(null);
+            }}
+            onSelectSearchResult={(idx) => {
+              const place = searchResults[idx];
+              if (!place) return;
+              setSelectedFeatureId(null);
+              setActiveSearchIndex(idx);
+              const bounds = place.boundary ? (geometryBounds(place.boundary) ?? undefined) : undefined;
               setFlyTarget({ lng: place.lng, lat: place.lat, zoom: 15, bounds, seq: Date.now() });
             }}
             onAddPlaceMarker={handleAddPlaceMarker}
           />
 
-          {selectedFeature && (
+          {selectedFeature ? (
             <FeatureInspector
               feature={selectedFeature}
               canEdit={canEdit}
@@ -1034,6 +1094,18 @@ export function App() {
                 setSelectedFeatureId(null);
               }}
             />
+          ) : (
+            activeSearchIndex !== null &&
+            searchResults[activeSearchIndex] && (
+              <PlaceDetailCard
+                place={searchResults[activeSearchIndex]}
+                index={activeSearchIndex}
+                canEdit={canEdit}
+                userLocation={userLocation}
+                onAddMarker={handleAddPlaceMarker}
+                onClose={() => setActiveSearchIndex(null)}
+              />
+            )
           )}
 
           {showShare && (

@@ -1,4 +1,4 @@
-import type { BasemapId, GeoGeometry, MapFeature, OverlayId, RouteMode } from '../types/map';
+import type { BasemapId, GeoGeometry, MapFeature, OverlayId, PlaceResult, RouteMode } from '../types/map';
 
 const EARTH_RADIUS_M = 6371008.8;
 const GCJ_AXIS = 6378245.0;
@@ -366,6 +366,212 @@ export function featuresViewport(
       [maxLng, maxLat],
     ],
   };
+}
+
+// 计算全部搜索结果的汇总视野（包含点坐标与行政区划边界，单点返回中心，多点或含边界返回包围盒）。
+export function placesViewport(
+  places: Pick<PlaceResult, 'lng' | 'lat' | 'boundary'>[],
+): { center: [number, number]; bounds?: WgsBounds } | null {
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  let count = 0;
+
+  const pushPt = (lng: number, lat: number) => {
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+    if (lng < minLng) minLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lng > maxLng) maxLng = lng;
+    if (lat > maxLat) maxLat = lat;
+    count++;
+  };
+
+  for (const p of places) {
+    pushPt(p.lng, p.lat);
+    if (p.boundary) {
+      const b = geometryBounds(p.boundary);
+      if (b) {
+        pushPt(b[0][0], b[0][1]);
+        pushPt(b[1][0], b[1][1]);
+      }
+    }
+  }
+
+  if (count === 0 || !Number.isFinite(minLng)) return null;
+  const center: [number, number] = [(minLng + maxLng) / 2, (minLat + maxLat) / 2];
+  if (Math.abs(maxLng - minLng) < 1e-6 && Math.abs(maxLat - minLat) < 1e-6) {
+    return { center };
+  }
+  return {
+    center,
+    bounds: [
+      [minLng, minLat],
+      [maxLng, maxLat],
+    ],
+  };
+}
+
+export interface LabelLayoutItem {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pinRadius: number;
+  priority: number;
+}
+
+export interface LabelPlacement {
+  pinOffset: [number, number];
+  labelLeft: number; // 相对偏移后圆点中心的 left（px）
+  labelTop: number; // 相对偏移后圆点中心的 top（px）
+}
+
+export function estimateLabelWidth(text: string, maxWidth = 160): number {
+  let w = 16;
+  for (const ch of text) {
+    w += ch.charCodeAt(0) > 255 ? 12 : 7;
+  }
+  return Math.min(maxWidth, Math.max(32, w));
+}
+
+// 对屏幕空间中重合或过近的点标记与文字标签做防重叠错位排布。
+export function computeLabelPlacements(
+  items: LabelLayoutItem[],
+  minPinDist = 22,
+): Map<string, LabelPlacement> {
+  const result = new Map<string, LabelPlacement>();
+  if (items.length === 0) return result;
+
+  const sorted = [...items].sort((a, b) => a.priority - b.priority);
+  const placedPins: Array<{ x: number; y: number; r: number }> = [];
+  const placedBoxes: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+
+  const pinOffsets = new Map<string, [number, number]>();
+  const ringAngles = [0, 45, 90, 135, 180, 225, 270, 315].map((deg) => (deg * Math.PI) / 180);
+
+  // 1. 先对几乎重合的圆点做微型环状错位，确保每个点都可见可点击
+  for (const item of sorted) {
+    const collidesPin = (cx: number, cy: number) =>
+      placedPins.some((p) => Math.hypot(cx - p.x, cy - p.y) < minPinDist);
+
+    let ox = 0;
+    let oy = 0;
+    if (collidesPin(item.x, item.y)) {
+      let found = false;
+      for (let ring = 1; ring <= 4 && !found; ring++) {
+        const radius = minPinDist * ring;
+        for (const angle of ringAngles) {
+          const tx = Math.round(Math.cos(angle) * radius);
+          const ty = Math.round(Math.sin(angle) * radius);
+          if (!collidesPin(item.x + tx, item.y + ty)) {
+            ox = tx;
+            oy = ty;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) {
+        const idx = placedPins.length;
+        const angle = (idx * 137.5 * Math.PI) / 180;
+        ox = Math.round(Math.cos(angle) * minPinDist * 2.2);
+        oy = Math.round(Math.sin(angle) * minPinDist * 2.2);
+      }
+    }
+    pinOffsets.set(item.id, [ox, oy]);
+    placedPins.push({ x: item.x + ox, y: item.y + oy, r: item.pinRadius });
+  }
+
+  const boxOverlapArea = (
+    a: { x1: number; y1: number; x2: number; y2: number },
+    b: { x1: number; y1: number; x2: number; y2: number },
+  ): number => {
+    const dx = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+    const dy = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+    return dx > 0 && dy > 0 ? dx * dy : 0;
+  };
+
+  // 2. 为每个标签选择不重叠的方位（上 / 右 / 左 / 下 / 四角 / 外扩层）
+  const pad = 3;
+  for (let i = 0; i < sorted.length; i++) {
+    const item = sorted[i];
+    const [ox, oy] = pinOffsets.get(item.id) ?? [0, 0];
+    const px = item.x + ox;
+    const py = item.y + oy;
+    const w = item.width;
+    const h = item.height;
+    const gap = item.pinRadius + 5;
+
+    const candidates: Array<[number, number]> = [
+      [-w / 2, -gap - h], // 正上
+      [gap, -h / 2], // 正右
+      [-gap - w, -h / 2], // 正左
+      [-w / 2, gap], // 正下
+      [gap, -gap - h], // 右上
+      [-gap - w, -gap - h], // 左上
+      [gap, gap], // 右下
+      [-gap - w, gap], // 左下
+      [-w / 2, -gap - h * 2 - 4], // 上二层
+      [-w / 2, gap + h + 4], // 下二层
+      [gap + 18, -h * 1.4], // 远右上
+      [-gap - w - 18, h * 0.4], // 远左下
+    ];
+
+    let bestLeft = candidates[0][0];
+    let bestTop = candidates[0][1];
+    let bestPenalty = Infinity;
+
+    for (const [left, top] of candidates) {
+      const box = {
+        x1: px + left - pad,
+        y1: py + top - pad,
+        x2: px + left + w + pad,
+        y2: py + top + h + pad,
+      };
+      let penalty = 0;
+      for (const existing of placedBoxes) {
+        penalty += boxOverlapArea(box, existing);
+      }
+      for (let j = 0; j < placedPins.length; j++) {
+        if (j === i) continue;
+        const pin = placedPins[j];
+        const pinBox = {
+          x1: pin.x - pin.r - 2,
+          y1: pin.y - pin.r - 2,
+          x2: pin.x + pin.r + 2,
+          y2: pin.y + pin.r + 2,
+        };
+        penalty += boxOverlapArea(box, pinBox) * 2;
+      }
+      if (penalty === 0) {
+        bestLeft = left;
+        bestTop = top;
+        bestPenalty = 0;
+        break;
+      }
+      if (penalty < bestPenalty) {
+        bestPenalty = penalty;
+        bestLeft = left;
+        bestTop = top;
+      }
+    }
+
+    placedBoxes.push({
+      x1: px + bestLeft - pad,
+      y1: py + bestTop - pad,
+      x2: px + bestLeft + w + pad,
+      y2: py + bestTop + h + pad,
+    });
+    result.set(item.id, {
+      pinOffset: [ox, oy],
+      labelLeft: Math.round(bestLeft),
+      labelTop: Math.round(bestTop),
+    });
+  }
+
+  return result;
 }
 
 // 统计当前地图同几何类型标注中出现次数最多的颜色；无同类时回退 fallback。

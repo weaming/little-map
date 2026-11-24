@@ -130,13 +130,28 @@ export async function deleteFeatures(
   return data;
 }
 
+export interface SearchPlaceOptions {
+  center?: [number, number];
+  bounds?: [[number, number], [number, number]];
+}
+
 export async function searchPlaces(
   query: string,
   provider = 'auto',
-  limit = 8,
+  limit = 20,
+  options?: SearchPlaceOptions,
 ): Promise<{ provider: string; results: PlaceResult[] }> {
+  const params: Record<string, string | number> = { q: query, provider, limit };
+  if (options?.center) {
+    params.lng = Number(options.center[0].toFixed(6));
+    params.lat = Number(options.center[1].toFixed(6));
+  }
+  if (options?.bounds) {
+    const [[minLng, minLat], [maxLng, maxLat]] = options.bounds;
+    params.bounds = `${minLng.toFixed(6)},${minLat.toFixed(6)},${maxLng.toFixed(6)},${maxLat.toFixed(6)}`;
+  }
   const { data } = await http.get<{ provider: string; results: PlaceResult[] }>('/search', {
-    params: { q: query, provider, limit },
+    params,
   });
   return data;
 }

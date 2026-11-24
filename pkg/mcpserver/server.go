@@ -95,9 +95,12 @@ type deleteFeaturesOut struct {
 }
 
 type searchPlaceArgs struct {
-	Query    string `json:"query" jsonschema:"Place name or address to search"`
-	Provider string `json:"provider,omitempty" jsonschema:"Provider: auto, amap, google, or osm"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"Maximum number of results (1-20)"`
+	Query     string    `json:"query" jsonschema:"Place name or address to search"`
+	Provider  string    `json:"provider,omitempty" jsonschema:"Provider: auto, amap, google, or osm"`
+	Limit     int       `json:"limit,omitempty" jsonschema:"Maximum number of results (1-20)"`
+	CenterLng *float64  `json:"center_lng,omitempty" jsonschema:"Optional preferred center longitude (WGS-84)"`
+	CenterLat *float64  `json:"center_lat,omitempty" jsonschema:"Optional preferred center latitude (WGS-84)"`
+	Bounds    []float64 `json:"bounds,omitempty" jsonschema:"Optional preferred viewport bounds [min_lng, min_lat, max_lng, max_lat] (WGS-84)"`
 }
 
 type searchPlaceOut struct {
@@ -207,7 +210,15 @@ func registerTools(server *mcp.Server, svc *service.Service, cfg *config.Config)
 		Name:        "search_place",
 		Description: "Search for a place or POI and return WGS-84 coordinates (lng, lat).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args searchPlaceArgs) (*mcp.CallToolResult, searchPlaceOut, error) {
-		results, provider, err := svc.SearchPlaces(ctx, args.Query, args.Provider, args.Limit)
+		opts := service.SearchOptions{
+			CenterLng: args.CenterLng,
+			CenterLat: args.CenterLat,
+		}
+		if len(args.Bounds) == 4 {
+			b := [4]float64{args.Bounds[0], args.Bounds[1], args.Bounds[2], args.Bounds[3]}
+			opts.Bounds = &b
+		}
+		results, provider, err := svc.SearchPlaces(ctx, args.Query, args.Provider, args.Limit, opts)
 		if err != nil {
 			return nil, searchPlaceOut{}, err
 		}

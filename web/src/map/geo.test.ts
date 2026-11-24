@@ -5,6 +5,7 @@ import {
   computeAlignedTileSpec,
   computeBaiduAlignedTileSpec,
   computeDetourWindow,
+  computeLabelPlacements,
   featuresViewport,
   formatArea,
   formatDistance,
@@ -15,6 +16,7 @@ import {
   lineLengthMeters,
   lngLatToWorldPx,
   pickDominantColor,
+  placesViewport,
   polygonAreaSqMeters,
   spliceLineSegment,
   wgs84ToGcj02,
@@ -165,6 +167,46 @@ describe('geo utilities', () => {
     expect(single?.bounds).toBeUndefined();
   });
 
+  test('placesViewport fits all search results including boundaries', () => {
+    expect(placesViewport([])).toBeNull();
+
+    const single = placesViewport([{ lng: 116.4, lat: 39.9 }]);
+    expect(single?.center).toEqual([116.4, 39.9]);
+    expect(single?.bounds).toBeUndefined();
+
+    const multi = placesViewport([
+      { lng: 116.35, lat: 39.88 },
+      { lng: 116.45, lat: 39.95 },
+    ]);
+    expect(multi?.bounds).toEqual([
+      [116.35, 39.88],
+      [116.45, 39.95],
+    ]);
+
+    const withBoundary = placesViewport([
+      {
+        lng: 116.4,
+        lat: 39.9,
+        boundary: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [116.3, 39.8],
+              [116.5, 39.8],
+              [116.5, 40.0],
+              [116.3, 40.0],
+              [116.3, 39.8],
+            ],
+          ],
+        },
+      },
+    ]);
+    expect(withBoundary?.bounds).toEqual([
+      [116.3, 39.8],
+      [116.5, 40.0],
+    ]);
+  });
+
   test('pickDominantColor picks most frequent color within same geometry type', () => {
     const sample = [
       { color: '#dc2626', geometry: { type: 'Point' as const, coordinates: [116.3, 39.9] } },
@@ -194,5 +236,37 @@ describe('geo utilities', () => {
     ]);
     expect(replaced[0]).toEqual(orig[0]);
     expect(replaced[replaced.length - 1]).toEqual(orig[orig.length - 1]);
+  });
+
+  test('computeLabelPlacements separates overlapping pins and labels at same coordinate', () => {
+    const placements = computeLabelPlacements([
+      { id: 'a', x: 200, y: 200, width: 80, height: 22, pinRadius: 10, priority: 0 },
+      { id: 'b', x: 200, y: 200, width: 80, height: 22, pinRadius: 10, priority: 1 },
+      { id: 'c', x: 200, y: 200, width: 80, height: 22, pinRadius: 10, priority: 2 },
+    ]);
+
+    const pa = placements.get('a')!;
+    const pb = placements.get('b')!;
+    const pc = placements.get('c')!;
+
+    // 高优先级保持在原位，其余圆点错开 >= 22px
+    expect(pa.pinOffset).toEqual([0, 0]);
+    expect(Math.hypot(pb.pinOffset[0] - pa.pinOffset[0], pb.pinOffset[1] - pa.pinOffset[1])).toBeGreaterThanOrEqual(22);
+    expect(Math.hypot(pc.pinOffset[0] - pa.pinOffset[0], pc.pinOffset[1] - pa.pinOffset[1])).toBeGreaterThanOrEqual(22);
+    expect(Math.hypot(pc.pinOffset[0] - pb.pinOffset[0], pc.pinOffset[1] - pb.pinOffset[1])).toBeGreaterThanOrEqual(22);
+
+    // 三个标签矩形两两无重叠
+    const boxes = [
+      { x1: 200 + pa.pinOffset[0] + pa.labelLeft, y1: 200 + pa.pinOffset[1] + pa.labelTop, x2: 200 + pa.pinOffset[0] + pa.labelLeft + 80, y2: 200 + pa.pinOffset[1] + pa.labelTop + 22 },
+      { x1: 200 + pb.pinOffset[0] + pb.labelLeft, y1: 200 + pb.pinOffset[1] + pb.labelTop, x2: 200 + pb.pinOffset[0] + pb.labelLeft + 80, y2: 200 + pb.pinOffset[1] + pb.labelTop + 22 },
+      { x1: 200 + pc.pinOffset[0] + pc.labelLeft, y1: 200 + pc.pinOffset[1] + pc.labelTop, x2: 200 + pc.pinOffset[0] + pc.labelLeft + 80, y2: 200 + pc.pinOffset[1] + pc.labelTop + 22 },
+    ];
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const overlapX = Math.min(boxes[i].x2, boxes[j].x2) - Math.max(boxes[i].x1, boxes[j].x1);
+        const overlapY = Math.min(boxes[i].y2, boxes[j].y2) - Math.max(boxes[i].y1, boxes[j].y1);
+        expect(overlapX > 0 && overlapY > 0).toBe(false);
+      }
+    }
   });
 });

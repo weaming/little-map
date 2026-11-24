@@ -6,7 +6,9 @@ import {
   BASEMAPS,
   OVERLAYS,
   computeDetourWindow,
+  computeLabelPlacements,
   displayToWgs84,
+  estimateLabelWidth,
   findNearestSegmentInsertIndex,
   findNearestVertexIndex,
   formatArea,
@@ -18,6 +20,7 @@ import {
   polygonAreaSqMeters,
   spliceLineSegment,
   wgs84ToDisplay,
+  type LabelLayoutItem,
   type WgsBounds,
 } from '../map/geo';
 import type {
@@ -44,7 +47,8 @@ interface MapCanvasProps {
   features: MapFeature[];
   selectedFeatureId: string | null;
   editingLineFeatureId: string | null;
-  searchPreview: PlaceResult | null;
+  searchResults: PlaceResult[];
+  activeSearchIndex: number | null;
   trafficOverlay: TrafficSegment[] | null;
   tool: DrawTool;
   flyTarget: {
@@ -57,12 +61,14 @@ interface MapCanvasProps {
   userLocation: [number, number] | null;
   externalWaypoint?: { coord: [number, number]; name?: string; seq: number } | null;
   onSelectFeature: (id: string | null) => void;
+  onSelectSearchResult?: (index: number) => void;
   onCreateGeometry: (geometry: GeoGeometry) => void;
   onSaveRoute: (route: RouteResult, waypointNames: string[]) => void;
   onSaveEditedLine: (featureId: string, coords: [number, number][]) => void;
   onCancelEditLine: () => void;
   onToolCancel: () => void;
   onViewChange?: (view: { lng: number; lat: number; zoom: number }) => void;
+  onViewportChange?: (viewport: { center: [number, number]; bounds: WgsBounds }) => void;
 }
 
 const FEATURES_SOURCE = 'little-map-features';
@@ -492,19 +498,22 @@ export function MapCanvas({
   features,
   selectedFeatureId,
   editingLineFeatureId,
-  searchPreview,
+  searchResults,
+  activeSearchIndex,
   trafficOverlay,
   tool,
   flyTarget,
   userLocation,
   externalWaypoint,
   onSelectFeature,
+  onSelectSearchResult,
   onCreateGeometry,
   onSaveRoute,
   onSaveEditedLine,
   onCancelEditLine,
   onToolCancel,
   onViewChange,
+  onViewportChange,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -512,9 +521,61 @@ export function MapCanvas({
   const draftLabelsRef = useRef<maplibregl.Marker[]>([]);
   const editLineMarkersRef = useRef<maplibregl.Marker[]>([]);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
-  const previewMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const searchMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const labelEntriesRef = useRef<{
+    features: Array<{
+      id: string;
+      marker: maplibregl.Marker;
+      tagEl: HTMLElement | null;
+      displayCoord: [number, number];
+      labelText: string;
+      pinRadius: number;
+      priority: number;
+    }>;
+    search: Array<{
+      id: string;
+      marker: maplibregl.Marker;
+      tagEl: HTMLElement | null;
+      displayCoord: [number, number];
+      labelText: string;
+      pinRadius: number;
+      priority: number;
+    }>;
+  }>({ features: [], search: [] });
   const prevBasemapRef = useRef<BasemapId>(basemap);
   const routeReqSeqRef = useRef(0);
+
+  function relayoutMapLabels(map: maplibregl.Map | null) {
+    if (!map) return;
+    const allEntries = [...labelEntriesRef.current.search, ...labelEntriesRef.current.features];
+    if (allEntries.length === 0) return;
+
+    const layoutItems: LabelLayoutItem[] = allEntries.map((entry) => {
+      const pt = map.project(entry.displayCoord);
+      const measuredW = entry.tagEl?.offsetWidth ?? 0;
+      const measuredH = entry.tagEl?.offsetHeight ?? 0;
+      return {
+        id: entry.id,
+        x: pt.x,
+        y: pt.y,
+        width: entry.tagEl ? (measuredW > 0 ? measuredW : estimateLabelWidth(entry.labelText)) : 0,
+        height: entry.tagEl ? (measuredH > 0 ? measuredH : 22) : 0,
+        pinRadius: entry.pinRadius,
+        priority: entry.priority,
+      };
+    });
+
+    const placements = computeLabelPlacements(layoutItems, 22);
+    for (const entry of allEntries) {
+      const p = placements.get(entry.id);
+      if (!p) continue;
+      entry.marker.setOffset(p.pinOffset);
+      if (entry.tagEl) {
+        entry.tagEl.style.left = `${p.labelLeft}px`;
+        entry.tagEl.style.top = `${p.labelTop}px`;
+      }
+    }
+  }
 
   const [draftCoords, setDraftCoords] = useState<[number, number][]>([]);
   const [draftNames, setDraftNames] = useState<string[]>([]);
@@ -563,7 +624,8 @@ export function MapCanvas({
     features,
     selectedFeatureId,
     editingLineFeatureId,
-    searchPreview,
+    searchResults,
+    activeSearchIndex,
     trafficOverlay,
     viewportBounds,
     tool,
@@ -580,8 +642,10 @@ export function MapCanvas({
     hoverCoord,
     measureFrozen,
     onSelectFeature,
+    onSelectSearchResult,
     onCreateGeometry,
     onViewChange,
+    onViewportChange,
   });
   latestRef.current = {
     basemap,
@@ -590,7 +654,8 @@ export function MapCanvas({
     features,
     selectedFeatureId,
     editingLineFeatureId,
-    searchPreview,
+    searchResults,
+    activeSearchIndex,
     trafficOverlay,
     viewportBounds,
     tool,
@@ -607,8 +672,10 @@ export function MapCanvas({
     hoverCoord,
     measureFrozen,
     onSelectFeature,
+    onSelectSearchResult,
     onCreateGeometry,
     onViewChange,
+    onViewportChange,
   };
 
   function captureRouteSnapshot(): RouteDraftSnapshot {
@@ -817,7 +884,10 @@ export function MapCanvas({
     }
 
     if (!map.getSource(PREVIEW_SOURCE)) {
-      const preview = latestRef.current.searchPreview;
+      const curResults = latestRef.current.searchResults;
+      const curActive = latestRef.current.activeSearchIndex;
+      const preview =
+        curActive !== null ? curResults[curActive] : curResults.length === 1 ? curResults[0] : null;
       const previewData: GeoJSON.FeatureCollection =
         preview?.boundary
           ? {
@@ -899,9 +969,17 @@ export function MapCanvas({
 
     const updateViewportBounds = () => {
       const b = map.getBounds();
-      const sw = displayToWgs84(b.getWest(), b.getSouth(), latestRef.current.basemap);
-      const ne = displayToWgs84(b.getEast(), b.getNorth(), latestRef.current.basemap);
-      setViewportBounds([sw, ne]);
+      const curBasemap = latestRef.current.basemap;
+      const sw = displayToWgs84(b.getWest(), b.getSouth(), curBasemap);
+      const ne = displayToWgs84(b.getEast(), b.getNorth(), curBasemap);
+      const nextBounds: WgsBounds = [sw, ne];
+      setViewportBounds(nextBounds);
+      const center = map.getCenter();
+      const [cLng, cLat] = displayToWgs84(center.lng, center.lat, curBasemap);
+      latestRef.current.onViewportChange?.({
+        center: [Number(cLng.toFixed(6)), Number(cLat.toFixed(6))],
+        bounds: nextBounds,
+      });
     };
 
     map.on('style.load', () => {
@@ -910,6 +988,19 @@ export function MapCanvas({
       syncOverlayLayer(map, latestRef.current.basemap, latestRef.current.overlay);
       syncTrafficTileLayer(map, latestRef.current.basemap, latestRef.current.showTraffic);
       updateViewportBounds();
+    });
+
+    map.on('mousedown', () => {
+      // MapLibre 会阻止 canvas 默认 mousedown 行为，导致页面残留选区或输入框焦点未清除，
+      // 从而在 mouseup 时误触发浏览器划词翻译插件；此处主动清理。
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) {
+        sel.removeAllRanges();
+      }
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+        active.blur();
+      }
     });
 
     map.on('click', (ev) => {
@@ -1122,6 +1213,10 @@ export function MapCanvas({
       });
     });
 
+    map.on('zoomend', () => {
+      relayoutMapLabels(map);
+    });
+
     return () => {
       for (const marker of markersRef.current.values()) {
         marker.remove();
@@ -1137,8 +1232,10 @@ export function MapCanvas({
       editLineMarkersRef.current = [];
       userMarkerRef.current?.remove();
       userMarkerRef.current = null;
-      previewMarkerRef.current?.remove();
-      previewMarkerRef.current = null;
+      for (const m of searchMarkersRef.current) {
+        m.remove();
+      }
+      searchMarkersRef.current = [];
       map.remove();
       mapRef.current = null;
     };
@@ -1550,32 +1647,40 @@ export function MapCanvas({
       marker.remove();
     }
     markersRef.current.clear();
+    const featureLabelEntries: typeof labelEntriesRef.current.features = [];
 
-    for (const f of features) {
-      if (!f.visible || f.geometry.type !== 'Point') continue;
+    features.forEach((f, idx) => {
+      if (!f.visible || f.geometry.type !== 'Point') return;
       const [lng, lat] = f.geometry.coordinates as number[];
       const displayCoord = wgs84ToDisplay(lng, lat, basemap);
       const isSelected = f.id === selectedFeatureId;
 
       const el = document.createElement('div');
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.gap = '4px';
+      el.style.position = 'relative';
+      el.style.width = '0px';
+      el.style.height = '0px';
       el.style.cursor = 'pointer';
       el.style.userSelect = 'none';
+      el.style.zIndex = isSelected ? '12' : '3';
 
+      const pinSize = isSelected ? 18 : 14;
       const pin = document.createElement('span');
-      pin.style.width = isSelected ? '18px' : '14px';
-      pin.style.height = isSelected ? '18px' : '14px';
+      pin.style.position = 'absolute';
+      pin.style.left = `${-pinSize / 2}px`;
+      pin.style.top = `${-pinSize / 2}px`;
+      pin.style.width = `${pinSize}px`;
+      pin.style.height = `${pinSize}px`;
       pin.style.borderRadius = '50%';
       pin.style.background = f.color || '#2563eb';
       pin.style.border = isSelected ? '3px solid #0f172a' : '2.5px solid #ffffff';
       pin.style.boxShadow = '0 2px 6px rgba(0,0,0,0.35)';
       el.appendChild(pin);
 
+      let labelEl: HTMLElement | null = null;
       if (f.title) {
         const label = document.createElement('span');
         label.textContent = f.title;
+        label.style.position = 'absolute';
         label.style.background = isSelected ? '#0f172a' : 'rgba(255,255,255,0.92)';
         label.style.color = isSelected ? '#ffffff' : '#0f172a';
         label.style.padding = '2px 6px';
@@ -1584,7 +1689,11 @@ export function MapCanvas({
         label.style.fontWeight = '600';
         label.style.boxShadow = '0 1px 4px rgba(0,0,0,0.2)';
         label.style.whiteSpace = 'nowrap';
+        label.style.maxWidth = '160px';
+        label.style.overflow = 'hidden';
+        label.style.textOverflow = 'ellipsis';
         el.appendChild(label);
+        labelEl = label;
       }
 
       el.addEventListener('click', (ev) => {
@@ -1620,11 +1729,23 @@ export function MapCanvas({
         }
       });
 
-      const marker = new maplibregl.Marker({ element: el, anchor: 'left' })
+      const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
         .setLngLat(displayCoord)
         .addTo(map);
       markersRef.current.set(f.id, marker);
-    }
+      featureLabelEntries.push({
+        id: `feature:${f.id}`,
+        marker,
+        tagEl: labelEl,
+        displayCoord,
+        labelText: f.title || '',
+        pinRadius: pinSize / 2,
+        priority: isSelected ? 1 : 100 + idx,
+      });
+    });
+
+    labelEntriesRef.current.features = featureLabelEntries;
+    relayoutMapLabels(map);
   }, [features, basemap, selectedFeatureId, viewportBounds]);
 
   // 同步绘制/测距/路线规划草图图层与图形标签
@@ -1926,22 +2047,31 @@ export function MapCanvas({
     userMarkerRef.current = new maplibregl.Marker({ element: el }).setLngLat(displayCoord).addTo(map);
   }, [userLocation, basemap]);
 
-  // 渲染搜索结果临时高亮标记与边界预览（随底图自动做 WGS-84 / GCJ-02 纠偏）
+  // 全量渲染搜索结果临时标记与当前高亮项边界预览（随底图自动做 WGS-84 / GCJ-02 纠偏）
   useEffect(() => {
     const map = mapRef.current;
-    previewMarkerRef.current?.remove();
-    previewMarkerRef.current = null;
+    for (const m of searchMarkersRef.current) {
+      m.remove();
+    }
+    searchMarkersRef.current = [];
     if (!map) return;
+
+    const activePlace =
+      activeSearchIndex !== null
+        ? searchResults[activeSearchIndex] ?? null
+        : searchResults.length === 1
+          ? searchResults[0]
+          : null;
 
     const src = map.getSource(PREVIEW_SOURCE) as maplibregl.GeoJSONSource | undefined;
     if (src) {
-      if (searchPreview?.boundary) {
+      if (activePlace?.boundary) {
         src.setData({
           type: 'FeatureCollection',
           features: [
             {
               type: 'Feature',
-              geometry: geometryToDisplay(searchPreview.boundary, basemap) as GeoJSON.Geometry,
+              geometry: geometryToDisplay(activePlace.boundary, basemap) as GeoJSON.Geometry,
               properties: {},
             },
           ],
@@ -1951,41 +2081,108 @@ export function MapCanvas({
       }
     }
 
-    if (!searchPreview) return;
+    if (searchResults.length === 0) {
+      labelEntriesRef.current.search = [];
+      relayoutMapLabels(map);
+      return;
+    }
 
-    const el = document.createElement('div');
-    el.style.display = 'flex';
-    el.style.flexDirection = 'column';
-    el.style.alignItems = 'center';
-    el.style.pointerEvents = 'none';
+    const nextMarkers: maplibregl.Marker[] = [];
+    const searchLabelEntries: typeof labelEntriesRef.current.search = [];
+    searchResults.forEach((place, idx) => {
+      const isActive = idx === activeSearchIndex || (activeSearchIndex === null && searchResults.length === 1);
+      const pinSize = isActive ? 24 : 20;
 
-    const tag = document.createElement('div');
-    tag.textContent = searchPreview.name;
-    tag.style.background = '#dc2626';
-    tag.style.color = '#ffffff';
-    tag.style.padding = '3px 8px';
-    tag.style.borderRadius = '999px';
-    tag.style.fontSize = '12px';
-    tag.style.fontWeight = '600';
-    tag.style.boxShadow = '0 2px 8px rgba(220, 38, 38, 0.4)';
-    tag.style.whiteSpace = 'nowrap';
-    tag.style.marginBottom = '4px';
-    el.appendChild(tag);
+      const el = document.createElement('div');
+      el.style.position = 'relative';
+      el.style.width = '0px';
+      el.style.height = '0px';
+      el.style.cursor = 'pointer';
+      el.style.userSelect = 'none';
+      el.style.zIndex = isActive ? '15' : '5';
 
-    const dot = document.createElement('span');
-    dot.style.width = '14px';
-    dot.style.height = '14px';
-    dot.style.borderRadius = '50%';
-    dot.style.background = '#dc2626';
-    dot.style.border = '3px solid #ffffff';
-    dot.style.boxShadow = '0 0 0 6px rgba(220, 38, 38, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35)';
-    el.appendChild(dot);
+      const tag = document.createElement('div');
+      tag.textContent = place.name;
+      tag.style.position = 'absolute';
+      tag.style.background = isActive ? '#dc2626' : 'rgba(255, 255, 255, 0.94)';
+      tag.style.color = isActive ? '#ffffff' : '#991b1b';
+      tag.style.border = isActive ? '1px solid #dc2626' : '1px solid rgba(220, 38, 38, 0.35)';
+      tag.style.padding = isActive ? '3px 8px' : '2px 6px';
+      tag.style.borderRadius = '999px';
+      tag.style.fontSize = isActive ? '12px' : '11px';
+      tag.style.fontWeight = '600';
+      tag.style.boxShadow = isActive
+        ? '0 2px 8px rgba(220, 38, 38, 0.42)'
+        : '0 1px 4px rgba(15, 23, 42, 0.18)';
+      tag.style.whiteSpace = 'nowrap';
+      tag.style.maxWidth = '160px';
+      tag.style.overflow = 'hidden';
+      tag.style.textOverflow = 'ellipsis';
+      el.appendChild(tag);
 
-    const displayCoord = wgs84ToDisplay(searchPreview.lng, searchPreview.lat, basemap);
-    previewMarkerRef.current = new maplibregl.Marker({ element: el, anchor: 'bottom' })
-      .setLngLat(displayCoord)
-      .addTo(map);
-  }, [searchPreview, basemap]);
+      const pin = document.createElement('span');
+      pin.textContent = String(idx + 1);
+      pin.style.position = 'absolute';
+      pin.style.left = `${-pinSize / 2}px`;
+      pin.style.top = `${-pinSize / 2}px`;
+      pin.style.display = 'inline-flex';
+      pin.style.alignItems = 'center';
+      pin.style.justifyContent = 'center';
+      pin.style.width = `${pinSize}px`;
+      pin.style.height = `${pinSize}px`;
+      pin.style.borderRadius = '50%';
+      pin.style.background = isActive ? '#dc2626' : '#ef4444';
+      pin.style.color = '#ffffff';
+      pin.style.fontSize = isActive ? '12px' : '11px';
+      pin.style.fontWeight = '700';
+      pin.style.border = isActive ? '3px solid #ffffff' : '2px solid #ffffff';
+      pin.style.boxShadow = isActive
+        ? '0 0 0 6px rgba(220, 38, 38, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35)'
+        : '0 2px 5px rgba(0, 0, 0, 0.28)';
+      el.appendChild(pin);
+
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const curTool = latestRef.current.tool;
+        if (curTool === 'route') {
+          const snapped: [number, number] = [Number(place.lng.toFixed(6)), Number(place.lat.toFixed(6))];
+          pushRouteHistory();
+          setBypassState(null);
+          setDraftCoords((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && Math.abs(last[0] - snapped[0]) < 1e-7 && Math.abs(last[1] - snapped[1]) < 1e-7) {
+              return prev;
+            }
+            setDraftNames((names) => [...names, place.name || '']);
+            if (prev.length >= 1) {
+              setRouteSegmentModes((modes) => [...modes, latestRef.current.defaultSegMode]);
+            }
+            return [...prev, snapped];
+          });
+          return;
+        }
+        latestRef.current.onSelectSearchResult?.(idx);
+      });
+
+      const displayCoord = wgs84ToDisplay(place.lng, place.lat, basemap);
+      const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+        .setLngLat(displayCoord)
+        .addTo(map);
+      nextMarkers.push(marker);
+      searchLabelEntries.push({
+        id: `search:${idx}`,
+        marker,
+        tagEl: tag,
+        displayCoord,
+        labelText: place.name,
+        pinRadius: pinSize / 2,
+        priority: isActive ? 0 : 10 + idx,
+      });
+    });
+    searchMarkersRef.current = nextMarkers;
+    labelEntriesRef.current.search = searchLabelEntries;
+    relayoutMapLabels(map);
+  }, [searchResults, activeSearchIndex, basemap]);
 
   // 渲染已保存路线的按需实时路况叠层
   useEffect(() => {
