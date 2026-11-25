@@ -1,4 +1,14 @@
-import type { BasemapId, BeikeCluster, BeikeHouse, GeoGeometry, MapFeature, OverlayId, PlaceResult, RouteMode } from '../types/map';
+import type {
+  BasemapId,
+  BeikeCluster,
+  BeikeHouse,
+  BeikeLiquidity,
+  GeoGeometry,
+  MapFeature,
+  OverlayId,
+  PlaceResult,
+  RouteMode,
+} from '../types/map';
 
 const EARTH_RADIUS_M = 6371008.8;
 const GCJ_AXIS = 6378245.0;
@@ -509,6 +519,16 @@ export function clusterBeikeHouses(
   });
   out.sort((a, b) => (a.minPrice || Infinity) - (b.minPrice || Infinity));
   return out;
+}
+
+// 按小区气泡流动性着色筛选（多选 OR 关系；空数组表示不限）。
+export function filterBeikeClustersByLiquidity(
+  clusters: BeikeCluster[],
+  liquidities: BeikeLiquidity[],
+): BeikeCluster[] {
+  if (liquidities.length === 0) return clusters;
+  const allowed = new Set(liquidities);
+  return clusters.filter((c) => allowed.has(c.liquidity));
 }
 
 function escapeCSVCell(val: string): string {

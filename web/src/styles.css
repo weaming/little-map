@@ -511,8 +511,8 @@ body,
   z-index: 18;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 10px;
+  gap: 4px;
+  padding: 4px 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(6px);
@@ -530,6 +530,80 @@ body,
   align-items: center;
   gap: 4px;
   white-space: nowrap;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+}
+
+.beike-legend-item:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.beike-legend-item.dimmed {
+  opacity: 0.42;
+}
+
+.beike-legend-item.active.hot {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #6ee7b7;
+  font-weight: 600;
+}
+
+.beike-legend-item.active.normal {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fcd34d;
+  font-weight: 600;
+}
+
+.beike-legend-item.active.slow {
+  background: #eef2ff;
+  color: #4338ca;
+  border-color: #a5b4fc;
+  font-weight: 600;
+}
+
+.beike-legend-item.active.unknown {
+  background: #f1f5f9;
+  color: #334155;
+  border-color: #94a3b8;
+  font-weight: 600;
+}
+
+.beike-liquidity-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.beike-liquidity-chip.active.hot {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #6ee7b7;
+}
+
+.beike-liquidity-chip.active.normal {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fcd34d;
+}
+
+.beike-liquidity-chip.active.slow {
+  background: #eef2ff;
+  color: #4338ca;
+  border-color: #a5b4fc;
+}
+
+.beike-liquidity-chip.active.unknown {
+  background: #f1f5f9;
+  color: #334155;
+  border-color: #94a3b8;
 }
 
 .beike-legend-dot {

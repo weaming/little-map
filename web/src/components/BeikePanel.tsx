@@ -23,6 +23,7 @@ import type {
   BeikeCity,
   BeikeCluster,
   BeikeHouse,
+  BeikeLiquidity,
   BeikeRegion,
   BeikeSearchParams,
   BeikeSearchResult,
@@ -290,12 +291,15 @@ interface BeikePanelProps {
   viewportOnly: boolean;
   localKeyword: string;
   selectedBizcircles: string[];
+  selectedLiquidities: BeikeLiquidity[];
+  liquidityCounts: Record<BeikeLiquidity, number>;
   copyWithPhotos: boolean;
   hasAmapKey: boolean;
   getViewportCenter: () => [number, number];
   onViewportOnlyChange: (next: boolean) => void;
   onLocalKeywordChange: (next: string) => void;
   onSelectedBizcirclesChange: (next: string[]) => void;
+  onToggleLiquidity: (level: BeikeLiquidity) => void;
   onCopyWithPhotosChange: (next: boolean) => void;
   onCopyCSV: (houses: BeikeHouse[]) => void;
   onResultsReplace: (res: BeikeSearchResult) => void;
@@ -312,12 +316,15 @@ export function BeikePanel({
   viewportOnly,
   localKeyword,
   selectedBizcircles,
+  selectedLiquidities,
+  liquidityCounts,
   copyWithPhotos,
   hasAmapKey,
   getViewportCenter,
   onViewportOnlyChange,
   onLocalKeywordChange,
   onSelectedBizcirclesChange,
+  onToggleLiquidity,
   onCopyWithPhotosChange,
   onCopyCSV,
   onResultsReplace,
@@ -1183,6 +1190,38 @@ export function BeikePanel({
                 </button>
               )}
             </div>
+            {(liquidityCounts.hot > 0 ||
+              liquidityCounts.normal > 0 ||
+              liquidityCounts.slow > 0 ||
+              liquidityCounts.unknown > 0 ||
+              selectedLiquidities.length > 0) && (
+              <div className="beike-chips" style={{ marginTop: 6 }}>
+                {(
+                  [
+                    { key: 'hot', label: '≤14天 热租', color: '#10b981' },
+                    { key: 'normal', label: '15-45天 正常', color: '#f59e0b' },
+                    { key: 'slow', label: '>45天 易议价', color: '#6366f1' },
+                    { key: 'unknown', label: '无日期', color: '#64748b' },
+                  ] as Array<{ key: BeikeLiquidity; label: string; color: string }>
+                )
+                  .filter((item) => liquidityCounts[item.key] > 0 || selectedLiquidities.includes(item.key))
+                  .map((item) => {
+                    const active = selectedLiquidities.includes(item.key);
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        className={`beike-chip beike-liquidity-chip ${item.key} ${active ? 'active' : ''}`}
+                        onClick={() => onToggleLiquidity(item.key)}
+                        title="按小区气泡着色筛选（可多选，与地图右下角图例同步）"
+                      >
+                        <span className="beike-legend-dot" style={{ background: item.color }} />
+                        {item.label} ({liquidityCounts[item.key]})
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
             {bizcircleStats.length > 0 && (
               <div className="beike-chips" style={{ marginTop: 6 }}>
                 {bizcircleStats.map(([biz, cnt]) => {
@@ -1231,7 +1270,7 @@ export function BeikePanel({
           </div>
         ) : clusters.length === 0 ? (
           <div style={{ padding: 18, textAlign: 'center', color: '#64748b', fontSize: 12.5 }}>
-            当前地图视口内无匹配房源，可取消「仅看视口内」或缩放地图。
+            当前筛选条件或视口内无匹配房源，可取消筛选或缩放地图。
           </div>
         ) : (
           <>

@@ -8,6 +8,7 @@ import {
   computeDetourWindow,
   computeLabelPlacements,
   featuresViewport,
+  filterBeikeClustersByLiquidity,
   formatArea,
   formatBeikeHousesCSV,
   formatDistance,
@@ -396,5 +397,12 @@ describe('geo utilities', () => {
     expect(wangjing.medianListedDays).toBe(8);
     expect(huilong.liquidity).toBe('slow');
     expect(huilong.medianListedDays).toBeGreaterThan(45);
+
+    // 按气泡着色筛选（空数组不限，多选为 OR）
+    expect(filterBeikeClustersByLiquidity(colored, []).length).toBe(2);
+    expect(filterBeikeClustersByLiquidity(colored, ['hot']).map((c) => c.resblock)).toEqual(['望京新城']);
+    expect(filterBeikeClustersByLiquidity(colored, ['slow']).map((c) => c.resblock)).toEqual(['龙跃苑']);
+    expect(filterBeikeClustersByLiquidity(colored, ['hot', 'slow']).length).toBe(2);
+    expect(filterBeikeClustersByLiquidity(colored, ['normal']).length).toBe(0);
   });
 });

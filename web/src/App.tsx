@@ -25,6 +25,7 @@ import { Toolbar } from './components/Toolbar';
 import {
   clusterBeikeHouses,
   featuresViewport,
+  filterBeikeClustersByLiquidity,
   formatBeikeHousesCSV,
   formatDistance,
   geometryBounds,
@@ -38,6 +39,7 @@ import type {
   AdminMapSummary,
   BasemapId,
   BeikeHouse,
+  BeikeLiquidity,
   BeikeSearchResult,
   DrawTool,
   GeoGeometry,
@@ -214,6 +216,7 @@ export function App() {
   const [beikeViewportOnly, setBeikeViewportOnly] = useState(false);
   const [beikeKeyword, setBeikeKeyword] = useState('');
   const [beikeBizcircles, setBeikeBizcircles] = useState<string[]>([]);
+  const [beikeLiquidities, setBeikeLiquidities] = useState<BeikeLiquidity[]>([]);
   const [beikeCopyWithPhotos, setBeikeCopyWithPhotos] = useState(false);
   const [currentViewportBounds, setCurrentViewportBounds] = useState<WgsBounds | null>(null);
   const [externalWaypoint, setExternalWaypoint] = useState<{
@@ -721,7 +724,7 @@ export function App() {
     }
   }
 
-  const beikeClusters = useMemo(
+  const baseBeikeClusters = useMemo(
     () =>
       clusterBeikeHouses(
         beikeHouses,
@@ -731,6 +734,25 @@ export function App() {
       ),
     [beikeHouses, beikeViewportOnly, currentViewportBounds, beikeKeyword, beikeBizcircles],
   );
+
+  const beikeLiquidityCounts = useMemo(() => {
+    const counts: Record<BeikeLiquidity, number> = { hot: 0, normal: 0, slow: 0, unknown: 0 };
+    for (const c of baseBeikeClusters) {
+      counts[c.liquidity]++;
+    }
+    return counts;
+  }, [baseBeikeClusters]);
+
+  const beikeClusters = useMemo(
+    () => filterBeikeClustersByLiquidity(baseBeikeClusters, beikeLiquidities),
+    [baseBeikeClusters, beikeLiquidities],
+  );
+
+  const handleToggleBeikeLiquidity = useCallback((level: BeikeLiquidity) => {
+    setBeikeLiquidities((prev) =>
+      prev.includes(level) ? prev.filter((item) => item !== level) : [...prev, level],
+    );
+  }, []);
 
   async function handleCopyBeikeCSV(houses: BeikeHouse[]) {
     if (houses.length === 0) {
@@ -1043,6 +1065,10 @@ export function App() {
             activeSearchIndex={activeSearchIndex}
             beikeClusters={beikeClusters}
             activeBeikeClusterKey={activeBeikeClusterKey}
+            hasBeikeResults={beikeHouses.length > 0}
+            beikeLiquidities={beikeLiquidities}
+            beikeLiquidityCounts={beikeLiquidityCounts}
+            onToggleBeikeLiquidity={handleToggleBeikeLiquidity}
             trafficOverlay={trafficOverlay?.segments ?? null}
             tool={tool}
             flyTarget={flyTarget}
@@ -1142,10 +1168,13 @@ export function App() {
             beikeViewportOnly={beikeViewportOnly}
             beikeKeyword={beikeKeyword}
             beikeBizcircles={beikeBizcircles}
+            beikeLiquidities={beikeLiquidities}
+            beikeLiquidityCounts={beikeLiquidityCounts}
             beikeCopyWithPhotos={beikeCopyWithPhotos}
             onBeikeViewportOnlyChange={setBeikeViewportOnly}
             onBeikeKeywordChange={setBeikeKeyword}
             onBeikeBizcirclesChange={setBeikeBizcircles}
+            onToggleBeikeLiquidity={handleToggleBeikeLiquidity}
             onBeikeCopyWithPhotosChange={setBeikeCopyWithPhotos}
             onBeikeCopyCSV={(houses) => void handleCopyBeikeCSV(houses)}
             onBeikeResultsReplace={(res) => {
@@ -1154,6 +1183,7 @@ export function App() {
               setBeikeMeta(rest);
               setActiveBeikeClusterKey(null);
               setBeikeBizcircles([]);
+              setBeikeLiquidities([]);
               const vp = placesViewport(houses);
               if (vp) {
                 setFlyTarget({
@@ -1193,6 +1223,7 @@ export function App() {
               setActiveBeikeClusterKey(null);
               setBeikeKeyword('');
               setBeikeBizcircles([]);
+              setBeikeLiquidities([]);
             }}
             onSelectBeikeCluster={(key) => {
               const target = beikeClusters.find((c) => c.key === key);

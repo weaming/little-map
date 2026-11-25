@@ -26,6 +26,7 @@ import {
 import type {
   BasemapId,
   BeikeCluster,
+  BeikeLiquidity,
   DrawTool,
   GeoGeometry,
   MapFeature,
@@ -52,6 +53,10 @@ interface MapCanvasProps {
   activeSearchIndex: number | null;
   beikeClusters: BeikeCluster[];
   activeBeikeClusterKey: string | null;
+  hasBeikeResults?: boolean;
+  beikeLiquidities?: BeikeLiquidity[];
+  beikeLiquidityCounts?: Record<BeikeLiquidity, number>;
+  onToggleBeikeLiquidity?: (level: BeikeLiquidity) => void;
   trafficOverlay: TrafficSegment[] | null;
   tool: DrawTool;
   flyTarget: {
@@ -506,6 +511,10 @@ export function MapCanvas({
   activeSearchIndex,
   beikeClusters,
   activeBeikeClusterKey,
+  hasBeikeResults = false,
+  beikeLiquidities = [],
+  beikeLiquidityCounts,
+  onToggleBeikeLiquidity,
   trafficOverlay,
   tool,
   flyTarget,
@@ -2756,20 +2765,40 @@ export function MapCanvas({
   return (
     <>
       <div ref={containerRef} className="map-container" />
-      {beikeClusters.length > 0 && (
-        <div className="beike-map-legend" title="按小区房源中位挂牌天数着色">
-          <span className="beike-legend-item">
-            <span className="beike-legend-dot" style={{ background: '#10b981' }} />
-            ≤14天 热租
-          </span>
-          <span className="beike-legend-item">
-            <span className="beike-legend-dot" style={{ background: '#f59e0b' }} />
-            15-45天 正常
-          </span>
-          <span className="beike-legend-item">
-            <span className="beike-legend-dot" style={{ background: '#6366f1' }} />
-            &gt;45天 易议价
-          </span>
+      {(hasBeikeResults || beikeClusters.length > 0) && (
+        <div className="beike-map-legend" title="点击按小区中位挂牌天数筛选（支持多选）">
+          {(
+            [
+              { key: 'hot', label: '≤14天 热租', color: '#10b981' },
+              { key: 'normal', label: '15-45天 正常', color: '#f59e0b' },
+              { key: 'slow', label: '>45天 易议价', color: '#6366f1' },
+              { key: 'unknown', label: '无日期', color: '#64748b' },
+            ] as Array<{ key: BeikeLiquidity; label: string; color: string }>
+          )
+            .filter(
+              (item) =>
+                item.key !== 'unknown' ||
+                (beikeLiquidityCounts?.unknown ?? 0) > 0 ||
+                beikeLiquidities.includes('unknown'),
+            )
+            .map((item) => {
+              const active = beikeLiquidities.includes(item.key);
+              const dimmed = beikeLiquidities.length > 0 && !active;
+              const cnt = beikeLiquidityCounts?.[item.key];
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`beike-legend-item ${item.key} ${active ? 'active' : ''} ${dimmed ? 'dimmed' : ''}`}
+                  onClick={() => onToggleBeikeLiquidity?.(item.key)}
+                  aria-pressed={active}
+                >
+                  <span className="beike-legend-dot" style={{ background: item.color }} />
+                  {item.label}
+                  {typeof cnt === 'number' ? ` (${cnt})` : ''}
+                </button>
+              );
+            })}
         </div>
       )}
       {renderDraftBanner()}

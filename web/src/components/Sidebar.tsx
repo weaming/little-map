@@ -18,6 +18,7 @@ import { formatArea, formatDistance, lineLengthMeters, polygonAreaSqMeters } fro
 import type {
   BeikeCluster,
   BeikeHouse,
+  BeikeLiquidity,
   BeikeSearchResult,
   MapFeature,
   MapMeta,
@@ -65,10 +66,13 @@ interface SidebarProps {
   beikeViewportOnly: boolean;
   beikeKeyword: string;
   beikeBizcircles: string[];
+  beikeLiquidities: BeikeLiquidity[];
+  beikeLiquidityCounts: Record<BeikeLiquidity, number>;
   beikeCopyWithPhotos: boolean;
   onBeikeViewportOnlyChange: (next: boolean) => void;
   onBeikeKeywordChange: (next: string) => void;
   onBeikeBizcirclesChange: (next: string[]) => void;
+  onToggleBeikeLiquidity: (level: BeikeLiquidity) => void;
   onBeikeCopyWithPhotosChange: (next: boolean) => void;
   onBeikeCopyCSV: (houses: BeikeHouse[]) => void;
   onBeikeResultsReplace: (res: BeikeSearchResult) => void;
@@ -104,10 +108,13 @@ export function Sidebar({
   beikeViewportOnly,
   beikeKeyword,
   beikeBizcircles,
+  beikeLiquidities,
+  beikeLiquidityCounts,
   beikeCopyWithPhotos,
   onBeikeViewportOnlyChange,
   onBeikeKeywordChange,
   onBeikeBizcirclesChange,
+  onToggleBeikeLiquidity,
   onBeikeCopyWithPhotosChange,
   onBeikeCopyCSV,
   onBeikeResultsReplace,
@@ -307,12 +314,15 @@ export function Sidebar({
           viewportOnly={beikeViewportOnly}
           localKeyword={beikeKeyword}
           selectedBizcircles={beikeBizcircles}
+          selectedLiquidities={beikeLiquidities}
+          liquidityCounts={beikeLiquidityCounts}
           copyWithPhotos={beikeCopyWithPhotos}
           hasAmapKey={hasAmapKey}
           getViewportCenter={() => getSearchOptions().center ?? [mapMeta.center_lng, mapMeta.center_lat]}
           onViewportOnlyChange={onBeikeViewportOnlyChange}
           onLocalKeywordChange={onBeikeKeywordChange}
           onSelectedBizcirclesChange={onBeikeBizcirclesChange}
+          onToggleLiquidity={onToggleBeikeLiquidity}
           onCopyWithPhotosChange={onBeikeCopyWithPhotosChange}
           onCopyCSV={onBeikeCopyCSV}
           onResultsReplace={onBeikeResultsReplace}
