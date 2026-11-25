@@ -418,6 +418,7 @@ export function clusterBeikeHouses(
   viewport?: WgsBounds | null,
   keyword = '',
   bizcircles: string[] = [],
+  nowMs = Date.now(),
 ): BeikeCluster[] {
   const terms = keyword
     .trim()
@@ -448,6 +449,9 @@ export function clusterBeikeHouses(
         h.title,
         h.layout,
         h.orientation,
+        h.floor_level ?? '',
+        h.highlights ?? '',
+        h.price_note ?? '',
         ...h.tags,
       ]
         .join(' ')
@@ -469,6 +473,8 @@ export function clusterBeikeHouses(
         lat: h.lat,
         minPrice: h.price > 0 ? h.price : Infinity,
         maxPrice: h.price > 0 ? h.price : 0,
+        medianListedDays: null,
+        liquidity: 'unknown',
         houses: [],
       };
       map.set(key, cluster);
@@ -483,6 +489,22 @@ export function clusterBeikeHouses(
   const out = [...map.values()].map((c) => {
     c.houses.sort((a, b) => (a.price || Infinity) - (b.price || Infinity));
     if (!Number.isFinite(c.minPrice)) c.minPrice = 0;
+
+    const daysList: number[] = [];
+    for (const h of c.houses) {
+      if (!h.listed_at) continue;
+      const ts = Date.parse(`${h.listed_at}T00:00:00+08:00`);
+      if (!Number.isFinite(ts)) continue;
+      daysList.push(Math.max(0, Math.floor((nowMs - ts) / 86_400_000)));
+    }
+    if (daysList.length > 0) {
+      daysList.sort((a, b) => a - b);
+      const mid = Math.floor(daysList.length / 2);
+      const median =
+        daysList.length % 2 === 1 ? daysList[mid] : Math.round((daysList[mid - 1] + daysList[mid]) / 2);
+      c.medianListedDays = median;
+      c.liquidity = median <= 14 ? 'hot' : median <= 45 ? 'normal' : 'slow';
+    }
     return c;
   });
   out.sort((a, b) => (a.minPrice || Infinity) - (b.minPrice || Infinity));
@@ -508,9 +530,13 @@ export function formatBeikeHousesCSV(houses: BeikeHouse[], includePhotos = false
     '户型',
     '面积(㎡)',
     '朝向',
-    '总楼层',
+    '楼层',
     '地铁',
     '标签',
+    '小区亮点',
+    '价格变动',
+    '上架日期',
+    '可入住',
     '坐标(GCJ02)',
   ];
   if (includePhotos) {
@@ -521,6 +547,10 @@ export function formatBeikeHousesCSV(houses: BeikeHouse[], includePhotos = false
   for (const h of houses) {
     const rentLabel = h.rent_type === 'whole' ? '整租' : h.rent_type === 'shared' ? '合租' : '其他';
     const priceStr = h.price_text ? `${h.price_text}${h.price_unit || '元/月'}` : '';
+    const floorStr =
+      h.floor_level && h.floor_total > 0
+        ? `${h.floor_level}/${h.floor_total}层`
+        : h.floor_level || (h.floor_total > 0 ? `共${h.floor_total}层` : '');
     const [gLng, gLat] = wgs84ToGcj02(h.lng, h.lat);
     const row = [
       h.title || '',
@@ -532,9 +562,13 @@ export function formatBeikeHousesCSV(houses: BeikeHouse[], includePhotos = false
       h.layout || '',
       h.area > 0 ? String(h.area) : '',
       h.orientation || '',
-      h.floor_total > 0 ? String(h.floor_total) : '',
+      floorStr,
       h.subway_desc || h.subway_name || '',
       h.tags.join('/'),
+      h.highlights || '',
+      h.price_note || '',
+      h.listed_at || '',
+      h.available_at || '',
       `${gLng.toFixed(6)},${gLat.toFixed(6)}`,
     ];
     if (includePhotos) {

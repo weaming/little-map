@@ -2226,11 +2226,51 @@ export function MapCanvas({
       return;
     }
 
+    const liquidityColors = {
+      hot: {
+        bg: 'rgba(236, 253, 245, 0.96)',
+        text: '#065f46',
+        border: 'rgba(5, 150, 105, 0.45)',
+        pin: '#10b981',
+        activeBg: '#047857',
+        shadow: 'rgba(4, 120, 87, 0.42)',
+        ring: 'rgba(16, 185, 129, 0.25)',
+      },
+      normal: {
+        bg: 'rgba(255, 251, 235, 0.96)',
+        text: '#92400e',
+        border: 'rgba(217, 119, 6, 0.45)',
+        pin: '#f59e0b',
+        activeBg: '#b45309',
+        shadow: 'rgba(180, 83, 9, 0.42)',
+        ring: 'rgba(245, 158, 11, 0.28)',
+      },
+      slow: {
+        bg: 'rgba(238, 242, 255, 0.96)',
+        text: '#3730a3',
+        border: 'rgba(99, 102, 241, 0.45)',
+        pin: '#6366f1',
+        activeBg: '#4338ca',
+        shadow: 'rgba(67, 56, 202, 0.42)',
+        ring: 'rgba(99, 102, 241, 0.25)',
+      },
+      unknown: {
+        bg: 'rgba(248, 250, 252, 0.96)',
+        text: '#334155',
+        border: 'rgba(100, 116, 139, 0.42)',
+        pin: '#64748b',
+        activeBg: '#334155',
+        shadow: 'rgba(51, 65, 85, 0.4)',
+        ring: 'rgba(100, 116, 139, 0.25)',
+      },
+    } as const;
+
     const nextMarkers: maplibregl.Marker[] = [];
     const beikeLabelEntries: typeof labelEntriesRef.current.beike = [];
     beikeClusters.forEach((cluster, idx) => {
       const isActive = cluster.key === activeBeikeClusterKey;
       const pinSize = isActive ? 22 : 18;
+      const palette = liquidityColors[cluster.liquidity];
 
       const el = document.createElement('div');
       el.style.position = 'relative';
@@ -2241,23 +2281,24 @@ export function MapCanvas({
       el.style.zIndex = isActive ? '16' : '6';
 
       const priceText = cluster.minPrice > 0 ? `¥${Math.round(cluster.minPrice)}起` : '面议';
-      const labelText = `${cluster.resblock} · ${priceText} (${cluster.houses.length}套)`;
+      const daysPart = cluster.medianListedDays !== null ? ` · ${cluster.medianListedDays}天` : '';
+      const labelText = `${cluster.resblock} · ${priceText} (${cluster.houses.length}套${daysPart})`;
 
       const tag = document.createElement('div');
       tag.textContent = labelText;
       tag.style.position = 'absolute';
-      tag.style.background = isActive ? '#047857' : 'rgba(236, 253, 245, 0.96)';
-      tag.style.color = isActive ? '#ffffff' : '#065f46';
-      tag.style.border = isActive ? '1px solid #047857' : '1px solid rgba(5, 150, 105, 0.45)';
+      tag.style.background = isActive ? palette.activeBg : palette.bg;
+      tag.style.color = isActive ? '#ffffff' : palette.text;
+      tag.style.border = isActive ? `1px solid ${palette.activeBg}` : `1px solid ${palette.border}`;
       tag.style.padding = isActive ? '3px 8px' : '2px 7px';
       tag.style.borderRadius = '999px';
       tag.style.fontSize = isActive ? '12px' : '11px';
       tag.style.fontWeight = '600';
       tag.style.boxShadow = isActive
-        ? '0 2px 10px rgba(4, 120, 87, 0.42)'
+        ? `0 2px 10px ${palette.shadow}`
         : '0 1px 4px rgba(15, 23, 42, 0.16)';
       tag.style.whiteSpace = 'nowrap';
-      tag.style.maxWidth = '210px';
+      tag.style.maxWidth = '230px';
       tag.style.overflow = 'hidden';
       tag.style.textOverflow = 'ellipsis';
       el.appendChild(tag);
@@ -2273,13 +2314,13 @@ export function MapCanvas({
       pin.style.width = `${pinSize}px`;
       pin.style.height = `${pinSize}px`;
       pin.style.borderRadius = '50%';
-      pin.style.background = isActive ? '#047857' : '#10b981';
+      pin.style.background = isActive ? palette.activeBg : palette.pin;
       pin.style.color = '#ffffff';
       pin.style.fontSize = '11px';
       pin.style.fontWeight = '700';
       pin.style.border = isActive ? '3px solid #ffffff' : '2px solid #ffffff';
       pin.style.boxShadow = isActive
-        ? '0 0 0 6px rgba(16, 185, 129, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35)'
+        ? `0 0 0 6px ${palette.ring}, 0 2px 6px rgba(0, 0, 0, 0.35)`
         : '0 2px 5px rgba(0, 0, 0, 0.26)';
       el.appendChild(pin);
 
@@ -2715,6 +2756,22 @@ export function MapCanvas({
   return (
     <>
       <div ref={containerRef} className="map-container" />
+      {beikeClusters.length > 0 && (
+        <div className="beike-map-legend" title="按小区房源中位挂牌天数着色">
+          <span className="beike-legend-item">
+            <span className="beike-legend-dot" style={{ background: '#10b981' }} />
+            ≤14天 热租
+          </span>
+          <span className="beike-legend-item">
+            <span className="beike-legend-dot" style={{ background: '#f59e0b' }} />
+            15-45天 正常
+          </span>
+          <span className="beike-legend-item">
+            <span className="beike-legend-dot" style={{ background: '#6366f1' }} />
+            &gt;45天 易议价
+          </span>
+        </div>
+      )}
       {renderDraftBanner()}
     </>
   );

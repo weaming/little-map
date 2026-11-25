@@ -381,5 +381,20 @@ describe('geo utilities', () => {
     const [headerLine, rowLine] = csvWithPic.split('\n');
     expect(headerLine.endsWith(',图片URL')).toBe(true);
     expect(rowLine.endsWith(',https://ke-image.ljcdn.com/test.1500x1500.jpg')).toBe(true);
+
+    // 挂牌天数中位数与热度分级
+    const now = Date.parse('2026-11-25T12:00:00+08:00');
+    const dated = [
+      { ...sample[0], listed_at: '2026-11-20' }, // 5 天
+      { ...sample[1], listed_at: '2026-11-15' }, // 10 天 -> 中位 8 天 (hot)
+      { ...sample[2], listed_at: '2026-09-20' }, // 66 天 (slow)
+    ];
+    const colored = clusterBeikeHouses(dated, null, '', [], now);
+    const wangjing = colored.find((c) => c.resblock === '望京新城')!;
+    const huilong = colored.find((c) => c.resblock === '龙跃苑')!;
+    expect(wangjing.liquidity).toBe('hot');
+    expect(wangjing.medianListedDays).toBe(8);
+    expect(huilong.liquidity).toBe('slow');
+    expect(huilong.medianListedDays).toBeGreaterThan(45);
   });
 });

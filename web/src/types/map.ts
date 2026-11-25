@@ -91,6 +91,7 @@ export interface BeikeHouse {
   bedrooms: number;
   bathrooms: number;
   orientation: string;
+  floor_level?: string;
   floor_total: number;
   district: string;
   bizcircle: string;
@@ -99,6 +100,10 @@ export interface BeikeHouse {
   subway_name: string;
   rent_type: 'whole' | 'shared' | 'other';
   tags: string[];
+  highlights?: string;
+  price_note?: string;
+  listed_at?: string;
+  available_at?: string;
   pic_url?: string;
   pic_thumb_url?: string;
 }
@@ -137,6 +142,8 @@ export interface BeikeSearchResult {
   houses: BeikeHouse[];
 }
 
+export type BeikeLiquidity = 'hot' | 'normal' | 'slow' | 'unknown';
+
 export interface BeikeCluster {
   key: string;
   resblock: string;
@@ -146,6 +153,8 @@ export interface BeikeCluster {
   lat: number;
   minPrice: number;
   maxPrice: number;
+  medianListedDays: number | null;
+  liquidity: BeikeLiquidity;
   houses: BeikeHouse[];
 }
 

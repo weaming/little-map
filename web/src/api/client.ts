@@ -251,7 +251,7 @@ export async function fetchBeikeRegions(
 }
 
 export async function searchBeikeRent(params: BeikeSearchParams): Promise<BeikeSearchResult> {
-  const { data } = await http.post<BeikeSearchResult>('/beike/search', params, { timeout: 30000 });
+  const { data } = await http.post<BeikeSearchResult>('/beike/search', params, { timeout: 60000 });
   return data;
 }
 

@@ -186,7 +186,7 @@ const DEFAULT_FILTERS: SavedFilters = {
   floor: '',
   brand: '',
   sort: 'price_asc',
-  pages: 2,
+  pages: 5,
   selectedFeatures: [],
 };
 
@@ -195,9 +195,11 @@ function loadSavedFilters(): SavedFilters {
     const raw = localStorage.getItem(FILTER_STORAGE_KEY);
     if (!raw) return DEFAULT_FILTERS;
     const parsed = JSON.parse(raw) as Partial<SavedFilters>;
+    const pages = parsed.pages === 10 ? 10 : 5;
     return {
       ...DEFAULT_FILTERS,
       ...parsed,
+      pages,
       selectedFeatures: Array.isArray(parsed.selectedFeatures) ? parsed.selectedFeatures : [],
     };
   } catch {
@@ -1017,14 +1019,12 @@ export function BeikePanel({
 
               <select
                 className="select-input"
-                value={filters.pages}
+                value={filters.pages === 10 ? 10 : 5}
                 onChange={(e) => updateFilter('pages', Number(e.target.value))}
                 title="单次查询翻页深度"
               >
-                <option value={1}>每次查 1 页 (~30套)</option>
-                <option value={2}>每次查 2 页 (~60套)</option>
-                <option value={3}>每次查 3 页 (~90套)</option>
                 <option value={5}>每次查 5 页 (~150套)</option>
+                <option value={10}>每次查 10 页 (~300套)</option>
               </select>
             </div>
 
@@ -1241,13 +1241,20 @@ export function BeikePanel({
                 className={`feature-item ${cluster.key === activeClusterKey ? 'selected' : ''}`}
                 onClick={() => onSelectCluster(cluster.key)}
               >
-                <span className="beike-price-pill">
+                <span className={`beike-price-pill ${cluster.liquidity}`}>
                   ¥{cluster.minPrice > 0 ? Math.round(cluster.minPrice) : '-'}
                 </span>
                 <div className="feature-meta">
                   <div className="feature-title">{cluster.resblock}</div>
                   <div className="feature-sub">
-                    {[cluster.district, cluster.bizcircle].filter(Boolean).join(' · ')} · {cluster.houses.length} 套
+                    {[
+                      cluster.district,
+                      cluster.bizcircle,
+                      `${cluster.houses.length}套`,
+                      cluster.medianListedDays !== null ? `均挂${cluster.medianListedDays}天` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </div>
                 </div>
               </div>

@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	"beike-mcp/beike"
 
@@ -45,6 +48,7 @@ type BeikeHouse struct {
 	Bedrooms    int      `json:"bedrooms"`
 	Bathrooms   int      `json:"bathrooms"`
 	Orientation string   `json:"orientation"`
+	FloorLevel  string   `json:"floor_level,omitempty"`
 	FloorTotal  int      `json:"floor_total"`
 	District    string   `json:"district"`
 	Bizcircle   string   `json:"bizcircle"`
@@ -53,6 +57,10 @@ type BeikeHouse struct {
 	SubwayName  string   `json:"subway_name"`
 	RentType    string   `json:"rent_type"` // whole | shared | other
 	Tags        []string `json:"tags"`
+	Highlights  string   `json:"highlights,omitempty"`
+	PriceNote   string   `json:"price_note,omitempty"`
+	ListedAt    string   `json:"listed_at,omitempty"`
+	AvailableAt string   `json:"available_at,omitempty"`
 	PicURL      string   `json:"pic_url,omitempty"`
 	PicThumbURL string   `json:"pic_thumb_url,omitempty"`
 }
@@ -113,9 +121,9 @@ func (s *Service) SearchBeikeRent(ctx context.Context, in BeikeSearchInput) (*Be
 
 	pages := in.Pages
 	if pages <= 0 {
-		pages = 2
-	} else if pages > 5 {
 		pages = 5
+	} else if pages > 10 {
+		pages = 10
 	}
 
 	// 贝壳单 IP 并发上限为 2，服务层加闸门避免多标签页同时并发触发空页限流
@@ -156,6 +164,13 @@ func (s *Service) SearchBeikeRent(ctx context.Context, in BeikeSearchInput) (*Be
 		return nil, fmt.Errorf("beike search: %w", err)
 	}
 
+	loc := time.FixedZone("HKT", 8*3600)
+	if s.cfg != nil && strings.TrimSpace(s.cfg.TZ) != "" {
+		if loaded, err := time.LoadLocation(strings.TrimSpace(s.cfg.TZ)); err == nil {
+			loc = loaded
+		}
+	}
+
 	houses := make([]BeikeHouse, 0, len(res.Houses))
 	for _, h := range res.Houses {
 		if h.Lng == 0 && h.Lat == 0 {
@@ -180,6 +195,18 @@ func (s *Service) SearchBeikeRent(ctx context.Context, in BeikeSearchInput) (*Be
 		if priceText == "" && h.Price > 0 {
 			priceText = fmt.Sprintf("%.0f", h.Price)
 		}
+		raw := h.Raw()
+		floorLevel := parseBeikeFloorLevel(raw["floor_level"])
+		highlights := asTrimmedString(raw["big_c_recommend_desc"])
+		if highlights == "" {
+			highlights = asTrimmedString(raw["hot_desc"])
+		}
+		priceNote := asTrimmedString(raw["operation_desc"])
+		listedAt := formatUnixDate(raw["app_plat_ctime"], false, loc)
+		availableAt := formatUnixDate(raw["available_rent_time"], true, loc)
+		if availableAt == "" {
+			availableAt = formatUnixDate(raw["availableRentTime"], true, loc)
+		}
 		houses = append(houses, BeikeHouse{
 			HouseCode:   h.HouseCode,
 			Title:       h.Title,
@@ -193,6 +220,7 @@ func (s *Service) SearchBeikeRent(ctx context.Context, in BeikeSearchInput) (*Be
 			Bedrooms:    h.Bedrooms,
 			Bathrooms:   h.Bathrooms,
 			Orientation: h.Orientation,
+			FloorLevel:  floorLevel,
 			FloorTotal:  h.FloorTotal,
 			District:    h.District,
 			Bizcircle:   h.Bizcircle,
@@ -201,6 +229,10 @@ func (s *Service) SearchBeikeRent(ctx context.Context, in BeikeSearchInput) (*Be
 			SubwayName:  h.SubwayName,
 			RentType:    rt,
 			Tags:        tags,
+			Highlights:  highlights,
+			PriceNote:   priceNote,
+			ListedAt:    listedAt,
+			AvailableAt: availableAt,
 			PicURL:      beike.PicURL(h.PicURL, "large"),
 			PicThumbURL: beike.PicURL(h.PicURL, "small"),
 		})
@@ -224,4 +256,47 @@ func (s *Service) SearchBeikeRent(ctx context.Context, in BeikeSearchInput) (*Be
 		Notes:          res.Notes,
 		Houses:         houses,
 	}, nil
+}
+
+func parseBeikeFloorLevel(v any) string {
+	switch asTrimmedString(v) {
+	case "200500000001":
+		return "高楼层"
+	case "200500000002":
+		return "中楼层"
+	case "200500000003":
+		return "低楼层"
+	default:
+		return ""
+	}
+}
+
+func formatUnixDate(v any, isMillis bool, loc *time.Location) string {
+	var num float64
+	switch val := v.(type) {
+	case float64:
+		num = val
+	case int64:
+		num = float64(val)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if err != nil {
+			return ""
+		}
+		num = parsed
+	default:
+		return ""
+	}
+	if math.IsNaN(num) || math.IsInf(num, 0) || num <= 0 {
+		return ""
+	}
+	sec := int64(num)
+	if isMillis || num > 1e11 {
+		sec = int64(num / 1000)
+	}
+	// 忽略 2000 年前的占位时间戳
+	if sec < 946684800 {
+		return ""
+	}
+	return time.Unix(sec, 0).In(loc).Format("2006-01-02")
 }

@@ -74,6 +74,7 @@ export function BeikeClusterCard({
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
               {[cluster.district, cluster.bizcircle].filter(Boolean).join(' · ')}
               {priceRange ? ` · ${priceRange}` : ''} · {cluster.houses.length} 套
+              {cluster.medianListedDays !== null ? ` · 中位挂牌 ${cluster.medianListedDays} 天` : ''}
             </div>
           </div>
         </div>
@@ -107,12 +108,16 @@ export function BeikeClusterCard({
           const thumb = h.pic_thumb_url || h.pic_url;
           const photoIdx = photos.findIndex((p) => p.houseCode === h.house_code);
           const rentLabel = h.rent_type === 'whole' ? '整租' : h.rent_type === 'shared' ? '合租' : '';
+          const floorText =
+            h.floor_level && h.floor_total > 0
+              ? `${h.floor_level}/${h.floor_total}层`
+              : h.floor_level || (h.floor_total > 0 ? `共${h.floor_total}层` : '');
           const metaParts = [
             rentLabel,
             h.layout,
             h.area > 0 ? `${h.area}㎡` : '',
             h.orientation,
-            h.floor_total > 0 ? `共${h.floor_total}层` : '',
+            floorText,
           ].filter(Boolean);
 
           return (
@@ -139,6 +144,26 @@ export function BeikeClusterCard({
                   {metaParts.length > 0 && <div className="beike-house-meta">{metaParts.join(' · ')}</div>}
                 </div>
               </div>
+
+              {h.price_note && (
+                <div style={{ fontSize: 11.5, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px' }}>
+                  {h.price_note}
+                </div>
+              )}
+
+              {h.highlights && (
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                  {h.highlights.replace(/;/g, ' · ')}
+                </div>
+              )}
+
+              {(h.listed_at || h.available_at) && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  {[h.listed_at ? `上架 ${h.listed_at}` : '', h.available_at ? `可入住 ${h.available_at}` : '']
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              )}
 
               {(h.subway_desc || h.subway_name) && (
                 <div className="beike-house-sub">

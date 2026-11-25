@@ -753,10 +753,23 @@ export function App() {
       `- 租金：¥${house.price_text}${house.price_unit || '元/月'}`,
       `- 小区：${[house.district, house.bizcircle, house.resblock].filter(Boolean).join(' · ')}`,
     ];
-    const spec = [rentLabel, house.layout, house.area > 0 ? `${house.area}㎡` : '', house.orientation]
+    const floorText =
+      house.floor_level && house.floor_total > 0
+        ? `${house.floor_level}/${house.floor_total}层`
+        : house.floor_level || (house.floor_total > 0 ? `共${house.floor_total}层` : '');
+    const spec = [rentLabel, house.layout, house.area > 0 ? `${house.area}㎡` : '', house.orientation, floorText]
       .filter(Boolean)
       .join(' · ');
     if (spec) descLines.push(`- 户型：${spec}`);
+    if (house.price_note) descLines.push(`- 价格提示：${house.price_note}`);
+    if (house.highlights) descLines.push(`- 小区亮点：${house.highlights.replace(/;/g, ' · ')}`);
+    if (house.listed_at || house.available_at) {
+      const dates = [
+        house.listed_at ? `上架 ${house.listed_at}` : '',
+        house.available_at ? `可入住 ${house.available_at}` : '',
+      ].filter(Boolean);
+      descLines.push(`- 时间：${dates.join(' · ')}`);
+    }
     if (house.subway_desc || house.subway_name) {
       descLines.push(`- 地铁：${house.subway_desc || house.subway_name}`);
     }
