@@ -730,73 +730,11 @@ export function BeikePanel({
             )}
           </select>
 
-          <select
-            className="select-input"
-            value={filters.sort}
-            onChange={(e) => updateFilter('sort', e.target.value)}
-            title="排序方式"
-          >
-            <option value="price_asc">价格低→高</option>
-            <option value="price_desc">价格高→低</option>
-            <option value="newest">最新发布</option>
-            <option value="area_desc">面积大→小</option>
-            <option value="area_asc">面积小→大</option>
-            <option value="default">综合排序</option>
-          </select>
-        </div>
-
-        <div className="beike-grid-2">
-          <input
-            type="number"
-            min={0}
-            step={100}
-            className="text-input compact-input"
-            placeholder="最低租金(元)"
-            value={filters.priceMin}
-            onChange={(e) => updateFilter('priceMin', e.target.value)}
-          />
-          <input
-            type="number"
-            min={0}
-            step={100}
-            className="text-input compact-input"
-            placeholder="最高租金(元)"
-            value={filters.priceMax}
-            onChange={(e) => updateFilter('priceMax', e.target.value)}
-          />
-        </div>
-
-        <div className="beike-grid-2">
-          <select
-            className="select-input"
-            value={filters.rooms}
-            onChange={(e) => updateFilter('rooms', Number(e.target.value))}
-          >
-            <option value={0}>居室不限</option>
-            <option value={1}>1 居</option>
-            <option value={2}>2 居</option>
-            <option value={3}>3 居</option>
-            <option value={4}>4 居及以上</option>
-          </select>
-
-          <select
-            className="select-input"
-            value={filters.rentType}
-            onChange={(e) => updateFilter('rentType', e.target.value as 'any' | 'whole' | 'shared')}
-          >
-            <option value="any">整/合租不限</option>
-            <option value="whole">整租</option>
-            <option value="shared">合租</option>
-          </select>
-        </div>
-
-        {regions.length > 0 || metros.length > 0 ? (
-          <div className="beike-grid-2">
+          {regions.length > 0 ? (
             <div className="search-input-wrap" style={{ position: 'relative' }}>
               <input
                 className="text-input compact-input"
-                placeholder={regions.length > 0 ? '搜区域/商圈(如望京)' : '暂无内置商圈'}
-                disabled={regions.length === 0}
+                placeholder="搜区域/商圈(如望京)"
                 value={regionInput}
                 onFocus={() => {
                   setRegionDropdownOpen(true);
@@ -847,7 +785,7 @@ export function BeikePanel({
                   <X size={12} />
                 </button>
               )}
-              {regionDropdownOpen && regions.length > 0 && (
+              {regionDropdownOpen && (
                 <div className="beike-region-dropdown">
                   <button
                     type="button"
@@ -885,12 +823,81 @@ export function BeikePanel({
                 </div>
               )}
             </div>
+          ) : (
+            <input
+              className="text-input compact-input"
+              placeholder="区县关键词（如：惠阳、南山）"
+              value={filters.district}
+              onChange={(e) => updateFilter('district', e.target.value)}
+            />
+          )}
+        </div>
+
+        <div className="beike-grid-2">
+          <input
+            type="number"
+            min={0}
+            step={100}
+            className="text-input compact-input"
+            placeholder="最低租金(元)"
+            value={filters.priceMin}
+            onChange={(e) => updateFilter('priceMin', e.target.value)}
+          />
+          <input
+            type="number"
+            min={0}
+            step={100}
+            className="text-input compact-input"
+            placeholder="最高租金(元)"
+            value={filters.priceMax}
+            onChange={(e) => updateFilter('priceMax', e.target.value)}
+          />
+        </div>
+
+        <div className="beike-grid-2">
+          <select
+            className="select-input"
+            value={filters.rooms}
+            onChange={(e) => updateFilter('rooms', Number(e.target.value))}
+          >
+            <option value={0}>居室不限</option>
+            <option value={1}>1 居</option>
+            <option value={2}>2 居</option>
+            <option value={3}>3 居</option>
+            <option value={4}>4 居及以上</option>
+          </select>
+
+          <select
+            className="select-input"
+            value={filters.rentType}
+            onChange={(e) => updateFilter('rentType', e.target.value as 'any' | 'whole' | 'shared')}
+          >
+            <option value="any">整/合租不限</option>
+            <option value="whole">整租</option>
+            <option value="shared">合租</option>
+          </select>
+        </div>
+
+        {metros.length > 0 ? (
+          <div className="beike-grid-2">
+            <select
+              className="select-input"
+              value={filters.sort}
+              onChange={(e) => updateFilter('sort', e.target.value)}
+              title="排序方式"
+            >
+              <option value="price_asc">价格低→高</option>
+              <option value="price_desc">价格高→低</option>
+              <option value="newest">最新发布</option>
+              <option value="area_desc">面积大→小</option>
+              <option value="area_asc">面积小→大</option>
+              <option value="default">综合排序</option>
+            </select>
 
             <select
               className="select-input"
               value={filters.metroLine}
               onChange={(e) => updateFilter('metroLine', e.target.value)}
-              disabled={metros.length === 0}
             >
               <option value="">地铁线不限</option>
               {metros.map((m) => (
@@ -901,12 +908,19 @@ export function BeikePanel({
             </select>
           </div>
         ) : (
-          <input
-            className="text-input compact-input"
-            placeholder="区县关键词（如：惠阳、南山）"
-            value={filters.district}
-            onChange={(e) => updateFilter('district', e.target.value)}
-          />
+          <select
+            className="select-input"
+            value={filters.sort}
+            onChange={(e) => updateFilter('sort', e.target.value)}
+            title="排序方式"
+          >
+            <option value="price_asc">价格低→高</option>
+            <option value="price_desc">价格高→低</option>
+            <option value="newest">最新发布</option>
+            <option value="area_desc">面积大→小</option>
+            <option value="area_asc">面积小→大</option>
+            <option value="default">综合排序</option>
+          </select>
         )}
 
         <div className="beike-chips">
