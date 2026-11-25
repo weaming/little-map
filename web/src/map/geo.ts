@@ -15,19 +15,6 @@ export interface BasemapConfig {
 
 // 统一使用栅格瓦片接入高德、谷歌与 OSM，避免引入多套原生 SDK。
 export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
-  'amap-vec': {
-    id: 'amap-vec',
-    label: '高德矢量',
-    crs: 'gcj02',
-    tiles: [
-      'https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-      'https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-      'https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-      'https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
-    ],
-    attribution: '© 高德地图',
-    maxzoom: 18,
-  },
   'amap-sat': {
     id: 'amap-sat',
     label: '高德卫星',
@@ -41,14 +28,6 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
     attribution: '© 高德卫星',
     maxzoom: 18,
   },
-  'baidu-vec': {
-    id: 'baidu-vec',
-    label: '百度矢量 (2x)',
-    crs: 'wgs84',
-    tiles: [],
-    attribution: '© 百度地图',
-    maxzoom: 18,
-  },
   'baidu-sat': {
     id: 'baidu-sat',
     label: '百度卫星',
@@ -56,19 +35,6 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
     tiles: [],
     attribution: '© 百度卫星',
     maxzoom: 18,
-  },
-  'google-vec': {
-    id: 'google-vec',
-    label: 'Google 街道',
-    crs: 'gcj02',
-    tiles: [
-      'https://mt0.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
-      'https://mt1.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
-      'https://mt2.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
-      'https://mt3.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
-    ],
-    attribution: '© Google Maps',
-    maxzoom: 20,
   },
   'google-sat': {
     id: 'google-sat',
@@ -81,6 +47,40 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
       'https://mt3.google.com/vt/lyrs=s&hl=zh-CN&x={x}&y={y}&z={z}',
     ],
     attribution: '© Google Satellite',
+    maxzoom: 20,
+  },
+  'amap-vec': {
+    id: 'amap-vec',
+    label: '高德矢量',
+    crs: 'gcj02',
+    tiles: [
+      'https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+      'https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+      'https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+      'https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+    ],
+    attribution: '© 高德地图',
+    maxzoom: 18,
+  },
+  'baidu-vec': {
+    id: 'baidu-vec',
+    label: '百度矢量（高清）',
+    crs: 'wgs84',
+    tiles: [],
+    attribution: '© 百度地图',
+    maxzoom: 18,
+  },
+  'google-vec': {
+    id: 'google-vec',
+    label: 'Google 街道（高清）',
+    crs: 'gcj02',
+    tiles: [
+      'https://mt0.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
+      'https://mt1.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
+      'https://mt2.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
+      'https://mt3.google.com/vt/lyrs=m&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
+    ],
+    attribution: '© Google Maps',
     maxzoom: 20,
   },
   osm: {
@@ -109,6 +109,13 @@ export const OVERLAYS: Record<OverlayId, OverlayConfig> = {
     tiles: [],
     maxzoom: 20,
   },
+  'baidu-road': {
+    id: 'baidu-road',
+    label: '+ 百度标注（高清）',
+    crs: 'bd09',
+    tiles: [],
+    maxzoom: 18,
+  },
   'amap-label': {
     id: 'amap-label',
     label: '+ 高德标注（仅地名）',
@@ -133,16 +140,9 @@ export const OVERLAYS: Record<OverlayId, OverlayConfig> = {
     ],
     maxzoom: 18,
   },
-  'baidu-road': {
-    id: 'baidu-road',
-    label: '+ 百度路网 (2x 高清)',
-    crs: 'bd09',
-    tiles: [],
-    maxzoom: 18,
-  },
   'google-road': {
     id: 'google-road',
-    label: '+ Google 路网（2x 高清）',
+    label: '+ Google 路网（高清）',
     crs: 'gcj02',
     tiles: [
       'https://mt0.google.com/vt/lyrs=h&hl=zh-CN&scale=2&x={x}&y={y}&z={z}',
