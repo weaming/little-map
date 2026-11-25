@@ -1123,9 +1123,10 @@ export function BeikePanel({
                 setFromLocalCache(false);
                 onClear();
               }}
-              title="清除房源"
+              title="清除搜索结果与地图气泡（保留搜索条件）"
             >
-              <Trash2 size={14} />
+              <Trash2 size={13} />
+              清除结果
             </button>
           )}
         </div>
